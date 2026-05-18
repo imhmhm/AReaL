@@ -1,0 +1,181 @@
+"""IFEval reward function for instruction following tasks."""
+
+import ast
+import json
+import re
+
+from areal.utils import logging
+
+logger = logging.getLogger("IFEvalReward")
+
+# Pattern for thinking section removal
+_THINKING_START_TAG = "<think>"
+_THINKING_END_TAG = "</think>"
+_ANSWER_START_TAG = "<answer>"
+_ANSWER_END_TAG = "</answer>"
+
+
+def ifeval_reward_fn(
+    prompt: str,
+    completions: str,
+    prompt_ids: list[int],
+    completion_ids: list[int],
+    ground_truth: str | None = None,
+    **kwargs,
+) -> float:
+    """
+    Compute reward for instruction following tasks.
+
+    This function verifies whether the model's output follows the specified
+    instruction constraints (e.g., keyword presence, format requirements,
+    length constraints, etc.).
+
+    Args:
+        prompt: The original prompt/instruction
+        completions: Model output string
+        prompt_ids: Tokenized prompt IDs (unused for IFEval)
+        completion_ids: Tokenized completion IDs (unused for IFEval)
+        ground_truth: JSON string containing instruction_id and kwargs.
+            Format: '[{"instruction_id": ["keywords:existence"], "kwargs": [{"keywords": ["AI"]}]}]'
+        **kwargs: Additional data from dataset
+
+    Returns:
+        Reward value (0.0 to 1.0), computed as average across all constraints
+
+    Example:
+        >>> ifeval_reward_fn(
+        ...     prompt="Write about AI",
+        ...     completions="AI is transforming the world.",
+        ...     prompt_ids=None,
+        ...     completion_ids=None,
+        ...     ground_truth='[{"instruction_id": ["keywords:existence"], "kwargs": [{"keywords": ["AI"]}]}]',
+        ... )
+        1.0
+    """
+    if ground_truth is None:
+        logger.warning("No ground_truth provided for IFEval reward")
+        return 0.0
+
+    if len(completions) == 0:
+        logger.warning("Empty completion received for IFEval reward")
+        return 0.0
+
+    try:
+        # Parse ground truth constraints
+        constraint_dict = _parse_ground_truth(ground_truth)
+
+        # Extract answer (remove thinking section and answer tags)
+        answer = _remove_thinking_section(completions)
+
+        if len(answer) == 0:
+            logger.warning("Empty answer after removing thinking section")
+            return 0.0
+
+        # Get instruction registry
+        from areal.reward.IFEvalG import INSTRUCTION_DICT
+
+        instruction_keys = constraint_dict.get("instruction_id", [])
+        args_list = constraint_dict.get("kwargs", [])
+
+        if len(instruction_keys) == 0:
+            logger.warning("Empty instruction_id list in ground_truth")
+            return 0.0
+
+        rewards = []
+        for instruction_key, args in zip(instruction_keys, args_list):
+            if args is None:
+                args = {}
+            args = {k: v for k, v in args.items() if v is not None}
+
+            if instruction_key not in INSTRUCTION_DICT:
+                logger.warning(f"Unknown instruction: {instruction_key}")
+                rewards.append(0.0)
+                continue
+
+            try:
+                instruction_cls = INSTRUCTION_DICT[instruction_key]
+                instruction_instance = instruction_cls(instruction_key)
+                instruction_instance.build_description(**args)
+
+                if instruction_instance.check_following(answer):
+                    rewards.append(1.0)
+                else:
+                    rewards.append(0.0)
+            except Exception as e:
+                logger.warning(
+                    f"Error checking instruction {instruction_key}: {e}",
+                    exc_info=True,
+                )
+                rewards.append(0.0)
+
+        return sum(rewards) / max(len(rewards), 1)
+
+    except Exception:
+        logger.warning("Exception in ifeval_reward_fn", exc_info=True)
+        return 0.0
+
+
+def _parse_ground_truth(ground_truth: str) -> dict:
+    """
+    Parse ground truth constraints from string format.
+
+    Args:
+        ground_truth: JSON string or Python dict string
+
+    Returns:
+        Dictionary with instruction_id and kwargs
+    """
+    # Try ast.literal_eval first (handles Python dict strings)
+    constraint_dict = ast.literal_eval(ground_truth)
+
+    # Handle JSON string within the result
+    if isinstance(constraint_dict, str):
+        constraint_dict = json.loads(constraint_dict)
+
+    # Handle list format: take first element
+    if isinstance(constraint_dict, list):
+        if len(constraint_dict) == 0:
+            return {"instruction_id": [], "kwargs": []}
+        constraint_dict = constraint_dict[0]
+
+    return constraint_dict
+
+
+def _remove_thinking_section(prediction: str) -> str:
+    """
+    Remove thinking section and answer tags from prediction.
+
+    This handles the common format where models output:
+    <think>...analysis...</think>
+    <answer>...final answer...</answer>
+
+    Args:
+        prediction: Raw model output
+
+    Returns:
+        Cleaned answer string
+    """
+    # Remove </think> and split
+    prediction = prediction.replace(_THINKING_END_TAG, "").strip()
+
+    # Remove thinking section (everything before last <think>)
+    if _THINKING_START_TAG in prediction:
+        # Find all thinking sections and remove them
+        parts = prediction.split(_THINKING_START_TAG)
+        if len(parts) > 1:
+            # Keep only content after last <think>
+            prediction = parts[-1]
+
+    # Remove answer tags
+    prediction = prediction.replace(_ANSWER_START_TAG, "").replace(_ANSWER_END_TAG, "")
+
+    # Alternative format:  and  tags
+    prediction = prediction.replace("</thinking>", "").strip()
+    if "<thinking>" in prediction:
+        parts = prediction.split("<thinking>")
+        prediction = parts[-1]
+
+    return prediction.strip()
+
+
+__all__ = ["ifeval_reward_fn"]
