@@ -119,24 +119,49 @@ def _parse_ground_truth(ground_truth: str) -> dict:
     """
     Parse ground truth constraints from string format.
 
+    Handles multiple formats:
+    1. JSON strings with 'null' values (e.g., from Nemotron format)
+    2. Python dict strings with 'None' values (e.g., from IF_multi format)
+    3. Nested/double-encoded JSON strings
+
     Args:
         ground_truth: JSON string or Python dict string
 
     Returns:
         Dictionary with instruction_id and kwargs
     """
-    # Try ast.literal_eval first (handles Python dict strings)
-    constraint_dict = ast.literal_eval(ground_truth)
+    constraint_dict = None
 
-    # Handle JSON string within the result
+    # Try json.loads first (handles 'null' values from JSON)
+    try:
+        constraint_dict = json.loads(ground_truth)
+    except (json.JSONDecodeError, TypeError):
+        pass
+
+    # Fallback to ast.literal_eval (handles Python dict strings with 'None')
+    if constraint_dict is None:
+        try:
+            constraint_dict = ast.literal_eval(ground_truth)
+        except (ValueError, SyntaxError):
+            pass
+
+    # Handle nested JSON string (double-encoded case)
+    # e.g., '"{"instruction_id": ["test"]}"' or '"[{...}]"'
     if isinstance(constraint_dict, str):
-        constraint_dict = json.loads(constraint_dict)
+        try:
+            constraint_dict = json.loads(constraint_dict)
+        except (json.JSONDecodeError, TypeError):
+            pass
 
     # Handle list format: take first element
     if isinstance(constraint_dict, list):
         if len(constraint_dict) == 0:
             return {"instruction_id": [], "kwargs": []}
         constraint_dict = constraint_dict[0]
+
+    if constraint_dict is None:
+        logger.warning(f"Failed to parse ground_truth: {ground_truth[:100]}")
+        return {"instruction_id": [], "kwargs": []}
 
     return constraint_dict
 
@@ -168,12 +193,6 @@ def _remove_thinking_section(prediction: str) -> str:
 
     # Remove answer tags
     prediction = prediction.replace(_ANSWER_START_TAG, "").replace(_ANSWER_END_TAG, "")
-
-    # Alternative format:  and  tags
-    prediction = prediction.replace("</thinking>", "").strip()
-    if "<thinking>" in prediction:
-        parts = prediction.split("<thinking>")
-        prediction = parts[-1]
 
     return prediction.strip()
 

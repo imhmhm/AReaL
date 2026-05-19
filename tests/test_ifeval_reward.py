@@ -379,8 +379,24 @@ class TestParseGroundTruth:
         assert result["instruction_id"] == ["test"]
 
     def test_parse_nested_string(self):
-        """Test parsing nested JSON string."""
-        result = _parse_ground_truth('"{"instruction_id": ["test"]}"')
+        """Test parsing nested/double-encoded JSON string.
+
+        This handles the case where ground_truth was accidentally JSON-encoded twice:
+        - Original: {"instruction_id": ["test"]}
+        - After json.dumps: '{"instruction_id": ["test"]}'
+        - After another json.dumps: '"{\\"instruction_id\\": [\\"test\\"]}"'
+
+        The Python string value contains: " followed by { followed by backslash-quote etc.
+        When parsed by json.loads, returns: {"instruction_id": ["test"]} (a string)
+        Then another json.loads returns: {"instruction_id": ["test"]} (a dict)
+        """
+        # Correct format: use json.dumps to create proper double-encoded string
+        # to avoid confusion with Python escape sequences in source code
+        import json
+        original = {"instruction_id": ["test"]}
+        first_encode = json.dumps(original)  # '{"instruction_id": ["test"]}'
+        second_encode = json.dumps(first_encode)  # '"{\\"instruction_id\\": [\\"test\\"]}"'
+        result = _parse_ground_truth(second_encode)
         assert result["instruction_id"] == ["test"]
 
     def test_parse_list_format(self):
