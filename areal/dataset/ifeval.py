@@ -69,8 +69,19 @@ def get_ifeval_rl_dataset(
         if "messages" in sample:
             messages = sample["messages"]
         elif "prompt" in sample:
-            # Nemotron format: prompt is also a chat format array
-            messages = sample["prompt"]
+            prompt_value = sample["prompt"]
+            # Auto-detect format: OpenAI chat format or Alpaca text format
+            if isinstance(prompt_value, list):
+                # OpenAI format: list of dicts with role/content
+                messages = prompt_value
+            elif isinstance(prompt_value, str):
+                # Alpaca format: plain text string
+                messages = [{"role": "user", "content": prompt_value}]
+            else:
+                raise ValueError(
+                    f"'prompt' field must be a list (OpenAI format) or string (Alpaca format). "
+                    f"Got type: {type(prompt_value)}"
+                )
         elif "question" in sample:
             messages = [{"role": "user", "content": sample["question"]}]
         else:
@@ -83,9 +94,6 @@ def get_ifeval_rl_dataset(
         if ground_truth_key in sample and sample[ground_truth_key] is not None:
             # IF_multi format: use existing ground_truth field
             ground_truth = sample[ground_truth_key]
-        elif "constraint" in sample and sample["constraint"] is not None:
-            # Alternative field name
-            ground_truth = sample["constraint"]
         elif "instruction_id_list" in sample and "kwargs" in sample:
             # Nemotron format: build ground_truth from separate fields
             instruction_ids = list(sample["instruction_id_list"])
@@ -168,8 +176,19 @@ def get_ifeval_rl_dataset_with_verifier_field(
         if "messages" in sample:
             messages = sample["messages"]
         elif "prompt" in sample:
-            # Nemotron format: prompt is also a chat format array
-            messages = sample["prompt"]
+            prompt_value = sample["prompt"]
+            # Auto-detect format: OpenAI chat format or Alpaca text format
+            if isinstance(prompt_value, list):
+                # OpenAI format: list of dicts with role/content
+                messages = prompt_value
+            elif isinstance(prompt_value, str):
+                # Alpaca format: plain text string
+                messages = [{"role": "user", "content": prompt_value}]
+            else:
+                raise ValueError(
+                    f"'prompt' field must be a list (OpenAI format) or string (Alpaca format). "
+                    f"Got type: {type(prompt_value)}"
+                )
         else:
             raise ValueError(
                 f"Dataset must have 'messages' or 'prompt' field. "
@@ -179,8 +198,6 @@ def get_ifeval_rl_dataset_with_verifier_field(
         # Handle ground_truth in different formats
         if ground_truth_key in sample and sample[ground_truth_key] is not None:
             ground_truth = sample[ground_truth_key]
-        elif "constraint" in sample and sample["constraint"] is not None:
-            ground_truth = sample["constraint"]
         elif "instruction_id_list" in sample and "kwargs" in sample:
             # Nemotron format: build ground_truth from separate fields
             instruction_ids = list(sample["instruction_id_list"])
