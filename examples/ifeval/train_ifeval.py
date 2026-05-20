@@ -47,7 +47,6 @@ def main(args):
 
     # Load training dataset
     train_dataset = get_custom_dataset(
-        split="train",
         dataset_config=config.train_dataset,
         tokenizer=tokenizer,
     )
@@ -56,7 +55,6 @@ def main(args):
     valid_dataset = None
     if config.valid_dataset is not None:
         valid_dataset = get_custom_dataset(
-            split="test",
             dataset_config=config.valid_dataset,
             tokenizer=tokenizer,
         )

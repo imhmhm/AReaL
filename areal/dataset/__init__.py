@@ -170,10 +170,12 @@ def get_custom_dataset(
     **kwargs,
 ) -> "Dataset":
     if dataset_config is not None:
+        # config.split takes precedence over the split argument
+        effective_split = dataset_config.split if dataset_config.split is not None else split
         return _get_custom_dataset(
             path=dataset_config.path,
             type=dataset_config.type,
-            split=split,
+            split=effective_split,
             max_length=dataset_config.max_length,
             tokenizer=tokenizer,
             processor=processor,

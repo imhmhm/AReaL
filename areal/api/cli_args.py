@@ -2199,6 +2199,14 @@ class _DatasetConfig:
             "When None, routing is determined by the path field."
         },
     )
+    split: str | None = field(
+        default=None,
+        metadata={
+            "help": "Dataset split (e.g., 'train', 'test'). "
+            "When set, overrides the split argument passed to get_custom_dataset. "
+            "When None, the split is determined by the caller."
+        },
+    )
 
 
 @dataclass
