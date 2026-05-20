@@ -211,3 +211,5 @@ sympy/
 *_params_raw_meta_*.json
 *_params_non_converted_raw_meta_*.json
 kernel_meta/
+fusion_result.json
+

@@ -2,7 +2,7 @@
 
 import json
 
-from datasets import load_dataset
+from datasets import DatasetDict, load_dataset
 from transformers import PreTrainedTokenizerFast
 
 from areal.utils import logging
@@ -10,9 +10,30 @@ from areal.utils import logging
 logger = logging.getLogger("IFEvalDataset")
 
 
+def _load_dataset(path: str, split: str | None):
+    """Load dataset from path, supporting parquet files and auto-splitting DatasetDict."""
+    if path.endswith(".parquet"):
+        dataset = load_dataset("parquet", data_files=path, split=split)
+    else:
+        dataset = load_dataset(path=path, split=split)
+
+    # Handle DatasetDict (when split is None and dataset has multiple splits)
+    if isinstance(dataset, DatasetDict):
+        splits = list(dataset.keys())
+        if len(splits) == 1:
+            dataset = dataset[splits[0]]
+        else:
+            raise ValueError(
+                f"Dataset has multiple splits {splits}, but no split was specified. "
+                f"Please specify a split (e.g., split='train')."
+            )
+
+    return dataset
+
+
 def get_ifeval_rl_dataset(
     path: str,
-    split: str,
+    split: str | None,
     tokenizer: PreTrainedTokenizerFast,
     max_length: int | None = None,
     ground_truth_key: str = "ground_truth",
@@ -58,11 +79,7 @@ def get_ifeval_rl_dataset(
         ...     max_length=2048,
         ... )
     """
-    # Support parquet file loading
-    if path.endswith(".parquet"):
-        dataset = load_dataset("parquet", data_files=path, split="train")
-    else:
-        dataset = load_dataset(path=path, split=split)
+    dataset = _load_dataset(path, split)
 
     def process(sample):
         # Handle different input formats for prompt/messages
@@ -138,7 +155,7 @@ def get_ifeval_rl_dataset(
 
 def get_ifeval_rl_dataset_with_verifier_field(
     path: str,
-    split: str,
+    split: str | None,
     tokenizer: PreTrainedTokenizerFast,
     max_length: int | None = None,
     ground_truth_key: str = "ground_truth",
@@ -165,11 +182,7 @@ def get_ifeval_rl_dataset_with_verifier_field(
     Returns:
         Processed Dataset with 'dataset' field for verifier selection
     """
-    # Support parquet file loading
-    if path.endswith(".parquet"):
-        dataset = load_dataset("parquet", data_files=path, split="train")
-    else:
-        dataset = load_dataset(path=path, split=split)
+    dataset = _load_dataset(path, split)
 
     def process(sample):
         # Handle different input formats for prompt/messages
