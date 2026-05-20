@@ -15,6 +15,11 @@ VALID_DATASETS = [
     "virl39k",
     "hh-rlhf",
     "torl_data",
+    "ifeval",
+]
+
+VALID_FORMATS = [
+    "ifeval",
 ]
 
 logger = logging.getLogger("Dataset")
@@ -27,8 +32,28 @@ def _get_custom_dataset(
     max_length: int | None = None,
     tokenizer: Optional["PreTrainedTokenizerFast"] = None,
     processor: Optional["ProcessorMixin"] = None,
+    format: str | None = None,
     **kwargs,
 ) -> "Dataset":
+    # Route by format field first (takes precedence over path-based routing)
+    if format is not None:
+        if format == "ifeval" and type == "rl":
+            from .ifeval import get_ifeval_rl_dataset
+
+            return get_ifeval_rl_dataset(
+                path=path,
+                split=split,
+                tokenizer=tokenizer,
+                max_length=max_length,
+                **kwargs,
+            )
+        else:
+            raise ValueError(
+                f"Format '{format}' with training type '{type}' is not supported. "
+                f"Supported formats are: {VALID_FORMATS}."
+            )
+
+    # Fallback: route by path keyword matching
     if "gsm8k" in path and type == "sft":
         from .gsm8k import get_gsm8k_sft_dataset
 
@@ -119,10 +144,21 @@ def _get_custom_dataset(
             max_length=max_length,
             **kwargs,
         )
+    elif "ifeval" in path and type == "rl":
+        from .ifeval import get_ifeval_rl_dataset
+
+        return get_ifeval_rl_dataset(
+            path=path,
+            split=split,
+            tokenizer=tokenizer,
+            max_length=max_length,
+            **kwargs,
+        )
     else:
         raise ValueError(
             f"Dataset {path} with split {split} and training type {type} is not supported. "
             f"Supported datasets are: {VALID_DATASETS}. "
+            f"You can also use the 'format' field to specify data format directly."
         )
 
 
@@ -141,6 +177,7 @@ def get_custom_dataset(
             max_length=dataset_config.max_length,
             tokenizer=tokenizer,
             processor=processor,
+            format=dataset_config.format,
             **kwargs,
         )
 
@@ -155,5 +192,6 @@ def get_custom_dataset(
 
 __all__ = [
     "VALID_DATASETS",
+    "VALID_FORMATS",
     "get_custom_dataset",
 ]

@@ -2191,6 +2191,14 @@ class _DatasetConfig:
             "help": "Maximum token length of sequences in dataset. Longer sequences are filtered out."
         },
     )
+    format: str | None = field(
+        default=None,
+        metadata={
+            "help": "Data format for processing logic (e.g., 'ifeval'). "
+            "When set, overrides path-based routing. "
+            "When None, routing is determined by the path field."
+        },
+    )
 
 
 @dataclass
