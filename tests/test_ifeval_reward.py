@@ -1,15 +1,15 @@
-"""Unit tests for IFEval reward function."""
+"""Unit tests for instruction following reward function."""
 
-from areal.reward import ifeval_reward_fn
-from areal.reward.ifeval import _remove_thinking_section, _parse_ground_truth
+from areal.reward import if_reward_fn
+from areal.reward.instruction_following import _remove_thinking_section, _parse_ground_truth
 
 
-class TestIFEvalRewardBasic:
-    """Test cases for basic IFEval reward function."""
+class TestIFRewardBasic:
+    """Test cases for basic instruction following reward function."""
 
     def test_keywords_existence_correct(self):
         """Test reward when required keywords are present."""
-        reward = ifeval_reward_fn(
+        reward = if_reward_fn(
             prompt="Write about AI",
             completions="AI is transforming the world.",
             prompt_ids=[],
@@ -20,7 +20,7 @@ class TestIFEvalRewardBasic:
 
     def test_keywords_existence_missing(self):
         """Test reward when required keywords are missing."""
-        reward = ifeval_reward_fn(
+        reward = if_reward_fn(
             prompt="Write about AI",
             completions="Technology is advancing rapidly.",
             prompt_ids=[],
@@ -31,7 +31,7 @@ class TestIFEvalRewardBasic:
 
     def test_keywords_existence_case_insensitive(self):
         """Test keyword matching is case insensitive."""
-        reward = ifeval_reward_fn(
+        reward = if_reward_fn(
             prompt="Write about AI",
             completions="ai is transforming the world.",
             prompt_ids=[],
@@ -42,7 +42,7 @@ class TestIFEvalRewardBasic:
 
     def test_keywords_existence_multiple_keywords(self):
         """Test multiple keywords all present."""
-        reward = ifeval_reward_fn(
+        reward = if_reward_fn(
             prompt="Write about AI and future",
             completions="AI will shape the future of technology.",
             prompt_ids=[],
@@ -53,7 +53,7 @@ class TestIFEvalRewardBasic:
 
     def test_keywords_existence_partial_keywords(self):
         """Test partial keywords present."""
-        reward = ifeval_reward_fn(
+        reward = if_reward_fn(
             prompt="Write about AI and future",
             completions="AI is important.",
             prompt_ids=[],
@@ -63,12 +63,12 @@ class TestIFEvalRewardBasic:
         assert reward == 0.0
 
 
-class TestIFEvalForbiddenWords:
+class TestIFForbiddenWords:
     """Test forbidden words constraint."""
 
     def test_forbidden_words_not_present(self):
         """Test reward when forbidden words are absent."""
-        reward = ifeval_reward_fn(
+        reward = if_reward_fn(
             prompt="Write a response",
             completions="This is a good response.",
             prompt_ids=[],
@@ -79,7 +79,7 @@ class TestIFEvalForbiddenWords:
 
     def test_forbidden_words_present(self):
         """Test reward when forbidden words are present."""
-        reward = ifeval_reward_fn(
+        reward = if_reward_fn(
             prompt="Write a response",
             completions="This is a bad response.",
             prompt_ids=[],
@@ -90,7 +90,7 @@ class TestIFEvalForbiddenWords:
 
     def test_forbidden_words_case_insensitive(self):
         """Test forbidden word detection is case insensitive."""
-        reward = ifeval_reward_fn(
+        reward = if_reward_fn(
             prompt="Write a response",
             completions="This is BAD.",
             prompt_ids=[],
@@ -100,12 +100,12 @@ class TestIFEvalForbiddenWords:
         assert reward == 0.0
 
 
-class TestIFEvalMultipleConstraints:
+class TestIFMultipleConstraints:
     """Test cases with multiple constraints."""
 
     def test_multiple_constraints_all_pass(self):
         """Test reward with multiple constraints, all passing."""
-        reward = ifeval_reward_fn(
+        reward = if_reward_fn(
             prompt="Write about AI",
             completions="AI is great. AI will change the world.",
             prompt_ids=[],
@@ -116,7 +116,7 @@ class TestIFEvalMultipleConstraints:
 
     def test_multiple_constraints_partial_pass(self):
         """Test reward with multiple constraints, partial passing."""
-        reward = ifeval_reward_fn(
+        reward = if_reward_fn(
             prompt="Write about AI",
             completions="AI is great. Machine learning is also important.",
             prompt_ids=[],
@@ -127,7 +127,7 @@ class TestIFEvalMultipleConstraints:
 
     def test_multiple_constraints_all_fail(self):
         """Test reward with multiple constraints, all failing."""
-        reward = ifeval_reward_fn(
+        reward = if_reward_fn(
             prompt="Write about AI",
             completions="Technology is evolving.",
             prompt_ids=[],
@@ -137,12 +137,12 @@ class TestIFEvalMultipleConstraints:
         assert reward == 0.0
 
 
-class TestIFEvalEdgeCases:
-    """Test edge cases for IFEval reward function."""
+class TestIFEdgeCases:
+    """Test edge cases for instruction following reward function."""
 
     def test_empty_completion(self):
         """Test reward for empty completion."""
-        reward = ifeval_reward_fn(
+        reward = if_reward_fn(
             prompt="Write something",
             completions="",
             prompt_ids=[],
@@ -153,7 +153,7 @@ class TestIFEvalEdgeCases:
 
     def test_none_ground_truth(self):
         """Test reward when ground_truth is None."""
-        reward = ifeval_reward_fn(
+        reward = if_reward_fn(
             prompt="Write something",
             completions="Test output.",
             prompt_ids=[],
@@ -164,7 +164,7 @@ class TestIFEvalEdgeCases:
 
     def test_empty_instruction_list(self):
         """Test reward with empty instruction_id list (regression test for PR #1655)."""
-        reward = ifeval_reward_fn(
+        reward = if_reward_fn(
             prompt="Write something",
             completions="Test output.",
             prompt_ids=[],
@@ -175,7 +175,7 @@ class TestIFEvalEdgeCases:
 
     def test_unknown_instruction_key(self):
         """Test reward with unknown instruction key."""
-        reward = ifeval_reward_fn(
+        reward = if_reward_fn(
             prompt="Write something",
             completions="Test output.",
             prompt_ids=[],
@@ -185,12 +185,12 @@ class TestIFEvalEdgeCases:
         assert reward == 0.0
 
 
-class TestIFEvalFormatConstraints:
+class TestIFFormatConstraints:
     """Test format-related constraints."""
 
     def test_uppercase_constraint_correct(self):
         """Test reward for uppercase constraint."""
-        reward = ifeval_reward_fn(
+        reward = if_reward_fn(
             prompt="Write in uppercase",
             completions="THIS IS ALL UPPERCASE",
             prompt_ids=[],
@@ -201,7 +201,7 @@ class TestIFEvalFormatConstraints:
 
     def test_uppercase_constraint_wrong(self):
         """Test reward fails for lowercase when uppercase required."""
-        reward = ifeval_reward_fn(
+        reward = if_reward_fn(
             prompt="Write in uppercase",
             completions="this is lowercase",
             prompt_ids=[],
@@ -212,7 +212,7 @@ class TestIFEvalFormatConstraints:
 
     def test_lowercase_constraint_correct(self):
         """Test reward for lowercase constraint."""
-        reward = ifeval_reward_fn(
+        reward = if_reward_fn(
             prompt="Write in lowercase",
             completions="this is all lowercase",
             prompt_ids=[],
@@ -223,7 +223,7 @@ class TestIFEvalFormatConstraints:
 
     def test_json_format_correct(self):
         """Test reward for JSON format constraint."""
-        reward = ifeval_reward_fn(
+        reward = if_reward_fn(
             prompt="Return JSON",
             completions='{"status": "success", "value": 42}',
             prompt_ids=[],
@@ -234,7 +234,7 @@ class TestIFEvalFormatConstraints:
 
     def test_json_format_invalid(self):
         """Test reward for invalid JSON."""
-        reward = ifeval_reward_fn(
+        reward = if_reward_fn(
             prompt="Return JSON",
             completions='not valid json',
             prompt_ids=[],
@@ -245,7 +245,7 @@ class TestIFEvalFormatConstraints:
 
     def test_quotation_correct(self):
         """Test reward for quotation wrapping."""
-        reward = ifeval_reward_fn(
+        reward = if_reward_fn(
             prompt="Wrap in quotes",
             completions='"This is quoted"',
             prompt_ids=[],
@@ -256,7 +256,7 @@ class TestIFEvalFormatConstraints:
 
     def test_quotation_wrong(self):
         """Test reward fails without quotes."""
-        reward = ifeval_reward_fn(
+        reward = if_reward_fn(
             prompt="Wrap in quotes",
             completions="This is not quoted",
             prompt_ids=[],
@@ -266,12 +266,12 @@ class TestIFEvalFormatConstraints:
         assert reward == 0.0
 
 
-class TestIFEvalPunctuationConstraints:
+class TestIFPunctuationConstraints:
     """Test punctuation-related constraints."""
 
     def test_no_comma_correct(self):
         """Test reward for no comma constraint."""
-        reward = ifeval_reward_fn(
+        reward = if_reward_fn(
             prompt="No commas allowed",
             completions="This sentence has no commas at all",
             prompt_ids=[],
@@ -282,7 +282,7 @@ class TestIFEvalPunctuationConstraints:
 
     def test_no_comma_with_commas(self):
         """Test reward fails when commas are present."""
-        reward = ifeval_reward_fn(
+        reward = if_reward_fn(
             prompt="No commas allowed",
             completions="This, sentence, has commas",
             prompt_ids=[],
@@ -292,12 +292,12 @@ class TestIFEvalPunctuationConstraints:
         assert reward == 0.0
 
 
-class TestIFEvalEndConstraints:
+class TestIFEndConstraints:
     """Test end phrase constraints."""
 
     def test_end_phrase_correct(self):
         """Test reward for end phrase constraint."""
-        reward = ifeval_reward_fn(
+        reward = if_reward_fn(
             prompt="End with specific phrase",
             completions="This is my response. Thank you for asking!",
             prompt_ids=[],
@@ -308,7 +308,7 @@ class TestIFEvalEndConstraints:
 
     def test_end_phrase_wrong(self):
         """Test reward fails without correct end phrase."""
-        reward = ifeval_reward_fn(
+        reward = if_reward_fn(
             prompt="End with specific phrase",
             completions="This is my response. Goodbye!",
             prompt_ids=[],
@@ -411,12 +411,12 @@ class TestParseGroundTruth:
         assert result["kwargs"] == []
 
 
-class TestIFEvalLengthConstraints:
+class TestIFLengthConstraints:
     """Test length-related constraints."""
 
     def test_word_count_at_least(self):
         """Test word count constraint with at least."""
-        reward = ifeval_reward_fn(
+        reward = if_reward_fn(
             prompt="Write at least 10 words",
             completions="This response has more than ten words in it.",
             prompt_ids=[],
@@ -427,7 +427,7 @@ class TestIFEvalLengthConstraints:
 
     def test_word_count_at_most(self):
         """Test word count constraint with at most."""
-        reward = ifeval_reward_fn(
+        reward = if_reward_fn(
             prompt="Write at most 5 words",
             completions="Short response here.",
             prompt_ids=[],
@@ -438,7 +438,7 @@ class TestIFEvalLengthConstraints:
 
     def test_word_count_too_long(self):
         """Test word count constraint fails when too long."""
-        reward = ifeval_reward_fn(
+        reward = if_reward_fn(
             prompt="Write at most 5 words",
             completions="This is a very long response with many words.",
             prompt_ids=[],
@@ -448,12 +448,12 @@ class TestIFEvalLengthConstraints:
         assert reward == 0.0
 
 
-class TestIFEvalBulletConstraints:
+class TestIFBulletConstraints:
     """Test bullet list constraints."""
 
     def test_bullet_list_correct_count(self):
         """Test reward for correct bullet count."""
-        reward = ifeval_reward_fn(
+        reward = if_reward_fn(
             prompt="Write 3 bullet points",
             completions="* Point one\n* Point two\n* Point three",
             prompt_ids=[],
@@ -464,7 +464,7 @@ class TestIFEvalBulletConstraints:
 
     def test_bullet_list_wrong_count(self):
         """Test reward fails for wrong bullet count."""
-        reward = ifeval_reward_fn(
+        reward = if_reward_fn(
             prompt="Write 3 bullet points",
             completions="* Only one point",
             prompt_ids=[],
@@ -474,12 +474,12 @@ class TestIFEvalBulletConstraints:
         assert reward == 0.0
 
 
-class TestIFEvalRobustness:
-    """Test robustness of IFEval reward function."""
+class TestIFRobustness:
+    """Test robustness of instruction following reward function."""
 
     def test_malformed_ground_truth(self):
         """Test handling of malformed ground truth."""
-        reward = ifeval_reward_fn(
+        reward = if_reward_fn(
             prompt="Write something",
             completions="Test output.",
             prompt_ids=[],
@@ -490,7 +490,7 @@ class TestIFEvalRobustness:
 
     def test_unicode_content(self):
         """Test handling of unicode content."""
-        reward = ifeval_reward_fn(
+        reward = if_reward_fn(
             prompt="Write about AI",
             completions="AI é transforming the world. 你好",
             prompt_ids=[],
@@ -501,7 +501,7 @@ class TestIFEvalRobustness:
 
     def test_very_long_completion(self):
         """Test handling of very long completion."""
-        reward = ifeval_reward_fn(
+        reward = if_reward_fn(
             prompt="Write about AI",
             completions="AI " + "is " * 10000 + "important.",
             prompt_ids=[],
@@ -512,7 +512,7 @@ class TestIFEvalRobustness:
 
     def test_special_characters_in_completion(self):
         """Test handling of special characters."""
-        reward = ifeval_reward_fn(
+        reward = if_reward_fn(
             prompt="Write about AI",
             completions="AI\t\n\r\0is here",
             prompt_ids=[],

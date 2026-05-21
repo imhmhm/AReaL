@@ -15,11 +15,10 @@ VALID_DATASETS = [
     "virl39k",
     "hh-rlhf",
     "torl_data",
-    "ifeval",
 ]
 
 VALID_FORMATS = [
-    "ifeval",
+    "instruction_following",
 ]
 
 logger = logging.getLogger("Dataset")
@@ -37,10 +36,10 @@ def _get_custom_dataset(
 ) -> "Dataset":
     # Route by format field first (takes precedence over path-based routing)
     if format is not None:
-        if format == "ifeval" and type == "rl":
-            from .ifeval import get_ifeval_rl_dataset
+        if format == "instruction_following" and type == "rl":
+            from .instruction_following import get_if_rl_dataset
 
-            return get_ifeval_rl_dataset(
+            return get_if_rl_dataset(
                 path=path,
                 split=split,
                 tokenizer=tokenizer,
@@ -138,16 +137,6 @@ def _get_custom_dataset(
         from .torl_data import get_torl_data_rl_dataset
 
         return get_torl_data_rl_dataset(
-            path=path,
-            split=split,
-            tokenizer=tokenizer,
-            max_length=max_length,
-            **kwargs,
-        )
-    elif "ifeval" in path and type == "rl":
-        from .ifeval import get_ifeval_rl_dataset
-
-        return get_ifeval_rl_dataset(
             path=path,
             split=split,
             tokenizer=tokenizer,

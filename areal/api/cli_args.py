@@ -1354,7 +1354,7 @@ class vLLMConfig:
     max_num_seqs: int = 256
     # kv_cache_type: str = "auto"
     block_size: int = 16
-    swap_space: int = 4
+    # swap_space: int = 4  ## removed in v0.18.0
     cpu_offload_gb: float = 0
     disable_sliding_window: bool = True
     max_model_len: int | None = 32768
@@ -2194,7 +2194,7 @@ class _DatasetConfig:
     format: str | None = field(
         default=None,
         metadata={
-            "help": "Data format for processing logic (e.g., 'ifeval'). "
+            "help": "Data format for processing logic (e.g., 'instruction_following'). "
             "When set, overrides path-based routing. "
             "When None, routing is determined by the path field."
         },

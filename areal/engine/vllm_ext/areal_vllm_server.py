@@ -5,20 +5,34 @@ from http import HTTPStatus
 import uvloop
 from fastapi import Depends, Request
 from fastapi.responses import JSONResponse
-from vllm.entrypoints.openai.api_server import (
+# from vllm.entrypoints.openai.api_server import (
+#     create_completion as original_create_completion,
+# )
+from vllm.entrypoints.openai.completion.api_router import (
     create_completion as original_create_completion,
 )
-from vllm.entrypoints.openai.api_server import (
-    router,
-    run_server,
-    validate_json_request,
-)
+# from vllm.entrypoints.openai.api_server import (
+#     router,
+#     run_server,
+#     validate_json_request,
+# )
+from vllm.entrypoints.openai.completion.api_router import router
+from vllm.entrypoints.openai.api_server import run_server
+from vllm.entrypoints.openai.utils import validate_json_request
+
 from vllm.entrypoints.openai.cli_args import make_arg_parser, validate_parsed_serve_args
-from vllm.entrypoints.openai.protocol import (
-    CompletionRequest,
+
+# from vllm.entrypoints.openai.protocol import (
+#     CompletionRequest,
+#     ErrorResponse,
+#     OpenAIBaseModel,
+# )
+from vllm.entrypoints.openai.completion.protocol import CompletionRequest
+from vllm.entrypoints.openai.engine.protocol import (
     ErrorResponse,
     OpenAIBaseModel,
 )
+
 from vllm.entrypoints.utils import cli_env_setup, load_aware_call, with_cancellation
 from vllm.logger import init_logger
 from vllm.utils.argparse_utils import FlexibleArgumentParser

@@ -14,7 +14,7 @@
 
 """IFEvalG instruction registry for AReaL.
 
-This module provides instruction checking functionality for IFEval tasks.
+This module provides instruction checking functionality for instruction following tasks.
 Originally from Google Research IFEval, adapted for AReaL.
 """
 

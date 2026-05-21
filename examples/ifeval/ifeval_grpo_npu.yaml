@@ -1,4 +1,4 @@
-experiment_name: gsm8k-grpo
+experiment_name: ifeval-grpo
 trial_name: trial0
 
 seed: 1
@@ -14,7 +14,7 @@ cluster:
     type: nfs
     nfs_record_root: /tmp/areal/name_resolve
 
-allocation_mode: vllm:d1p1t1+d1p1t1
+allocation_mode: vllm:d4p1t1+d4p1t1
 
 scheduler:
   type: null
@@ -35,14 +35,14 @@ rollout:
 gconfig:
   n_samples: 4
   min_new_tokens: 0
-  max_new_tokens: 2048
+  max_new_tokens: 1024
   greedy: false
   temperature: 1.0
 
 actor:
   experiment_name: ${experiment_name}
   trial_name: ${trial_name}
-  path: Qwen/Qwen3-0.6B
+  path: Qwen/Qwen2.5-1.5B-Instruct
   init_from_scratch: false
   disable_dropout: true
   gradient_checkpointing: true
@@ -83,22 +83,18 @@ actor:
       gpu: 1
       mem: 32
       cmd: python3 -m areal.infra.rpc.rpc_server
-      env_vars: {}
-
-teacher:
-  allocation_mode: d1p1t4
-  rl_loss_weight: 1.0
-  distill_loss_weight: 0.005
-  experiment_name: ${experiment_name}
-  trial_name: ${trial_name}
-  path: Qwen/Qwen2.5-14B-Instruct
-  init_from_scratch: false
-  disable_dropout: true
-  dtype: ${actor.dtype}
-  mb_spec:
-    max_tokens_per_mb: 10240
-  optimizer: null
-  scheduling_spec: ${actor.scheduling_spec}
+      env_vars:
+        VLLM_USE_V1: "1"
+        VLLM_ALLOW_LONG_MAX_MODEL_LEN: "1"
+        TASK_QUEUE_ENABLE: "2"
+        HCCL_EXEC_TIMEOUT: "14400"
+        HCCL_OP_EXPANSION_MODE: "HOST"
+        ACL_DEVICE_SYNC_TIMEOUT: "14400"
+        HCCL_EVENT_TIMEOUT: "14500"
+        HCCL_ASYNC_ERROR_HANDLING: "0"
+        ACL_STREAM_TIMEOUT: "14500000"
+        HCCL_CONNECT_TIMEOUT: "7200"
+        PYTORCH_NPU_ALLOC_CONF: "expandable_segments:True"
 
 ref:
   experiment_name: ${experiment_name}
@@ -125,6 +121,7 @@ sglang:
   context_length: 32768
   mem_fraction_static: 0.8
 
+# vLLM
 vllm:
   model: ${actor.path}
   seed: ${seed}
@@ -132,6 +129,7 @@ vllm:
   dtype: ${actor.dtype}
   max_model_len: 32768
   gpu_memory_utilization: 0.8
+  enforce_eager: true
 
 # datasets
 train_dataset:
@@ -139,7 +137,7 @@ train_dataset:
   shuffle: true
   pin_memory: true
   num_workers: 4
-  path: openai/gsm8k
+  path: allenai/IF_multi_constraints_upto5
   type: rl
   max_length: 1024
 
@@ -147,7 +145,7 @@ valid_dataset:
   batch_size: 256
   pin_memory: true
   num_workers: 4
-  path: openai/gsm8k
+  path: google/IFEval
   type: rl
 
 # Utilities

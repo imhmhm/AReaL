@@ -5,7 +5,7 @@ from areal.utils import logging
 
 logger = logging.getLogger("RewardUtils")
 
-VALID_REWARD_FN = ["clevr_count_70k", "geometry3k", "ifeval"]
+VALID_REWARD_FN = ["clevr_count_70k", "geometry3k", "instruction_following"]
 
 
 def get_custom_reward_fn(path: str, **kwargs):
@@ -17,10 +17,10 @@ def get_custom_reward_fn(path: str, **kwargs):
         from .geometry3k import geometry3k_reward_fn
 
         return geometry3k_reward_fn
-    elif "ifeval" in path:
-        from .ifeval import ifeval_reward_fn
+    elif "instruction_following" in path:
+        from .instruction_following import if_reward_fn
 
-        return ifeval_reward_fn
+        return if_reward_fn
     else:
         raise ValueError(
             f"Reward function {path} is not supported. "
@@ -89,7 +89,7 @@ __all__ = [
     "gsm8k_reward_fn",
     "geometry3k_reward_fn",
     "clevr_count_70k_reward_fn",
-    "ifeval_reward_fn",
+    "if_reward_fn",
 ]
 
 
@@ -97,7 +97,7 @@ _LAZY_IMPORTS = {
     "gsm8k_reward_fn": "areal.reward.gsm8k",
     "geometry3k_reward_fn": "areal.reward.geometry3k",
     "clevr_count_70k_reward_fn": "areal.reward.clevr_count_70k",
-    "ifeval_reward_fn": "areal.reward.ifeval",
+    "if_reward_fn": "areal.reward.instruction_following",
 }
 
 
