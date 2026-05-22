@@ -18,7 +18,18 @@ def _load_dataset(path: str, split: str | None):
         dataset = load_dataset("json", data_files=path, split=split)
     else:
         dataset = load_dataset(path=path, split=split)
-
+    
+    # Handle DatasetDict (when split is None and dataset has multiple splits)
+    if isinstance(dataset, DatasetDict):
+        splits = list(dataset.keys())
+        if len(splits) == 1:
+            dataset = dataset[splits[0]]
+        else:
+            raise ValueError(
+                f"Dataset has multiple splits {splits}, but no split was specified. "
+                f"Please specify a split (e.g., split='train')."
+            )
+    
     return dataset
 
 
@@ -149,7 +160,7 @@ def get_if_rl_dataset(
 
     # Apply processing
     columns_to_remove = [c for c in dataset.column_names if c not in ["messages", "ground_truth"]]
-    dataset = dataset.map(process, remove_columns=columns_to_remove)
+    dataset = dataset.map(process).remove_columns(columns_to_remove)
 
     # Filter by length if max_length is provided
     if max_length is not None:
