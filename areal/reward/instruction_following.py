@@ -71,8 +71,15 @@ def if_reward_fn(
             logger.warning("Empty instruction_id list in ground_truth")
             return 0.0
 
+        if len(instruction_keys) != len(args_list):
+            logger.warning(
+                f"Mismatch between instruction_id count ({len(instruction_keys)}) "
+                f"and kwargs count ({len(args_list)})"
+            )
+
         rewards = []
-        for instruction_key, args in zip(instruction_keys, args_list):
+        for i, instruction_key in enumerate(instruction_keys):
+            args = args_list[i] if i < len(args_list) else {}
             if args is None:
                 args = {}
             args = {k: v for k, v in args.items() if v is not None}
@@ -173,7 +180,7 @@ def _remove_thinking_section(prediction: str) -> str:
 
     # split on thinking end tag and take everything after it
     if _THINKING_END_TAG in prediction:
-      prediction = prediction.split(_THINKING_END_TAG, 1)[-1]
+        prediction = prediction.split(_THINKING_END_TAG, 1)[-1]
     # The thinking section is truncated
     elif _THINKING_START_TAG in prediction:
         return ""

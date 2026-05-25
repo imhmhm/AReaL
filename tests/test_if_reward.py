@@ -1,7 +1,14 @@
 """Unit tests for instruction following reward function."""
 
 from areal.reward import if_reward_fn
-from areal.reward.instruction_following import _remove_thinking_section, _parse_ground_truth
+from areal.reward.instruction_following import (
+    _remove_thinking_section,
+    _parse_ground_truth,
+    _THINKING_START_TAG,
+    _THINKING_END_TAG,
+    _ANSWER_START_TAG,
+    _ANSWER_END_TAG,
+)
 
 
 class TestIFRewardBasic:
@@ -110,7 +117,7 @@ class TestIFMultipleConstraints:
             completions="AI is great. AI will change the world.",
             prompt_ids=[],
             completion_ids=[],
-            ground_truth='[{"instruction_id": ["keywords:existence", "keywords:frequency"], "kwargs": [{"keywords": ["AI"]}, {"word": "AI", "frequency": 2}]}]',
+            ground_truth='[{"instruction_id": ["keywords:existence", "keywords:frequency"], "kwargs": [{"keywords": ["AI"]}, {"keyword": "AI", "frequency": 2, "relation": "at least"}]}]',
         )
         assert reward == 1.0
 
@@ -121,7 +128,7 @@ class TestIFMultipleConstraints:
             completions="AI is great. Machine learning is also important.",
             prompt_ids=[],
             completion_ids=[],
-            ground_truth='[{"instruction_id": ["keywords:existence", "keywords:frequency"], "kwargs": [{"keywords": ["AI"]}, {"word": "AI", "frequency": 2}]}]',
+            ground_truth='[{"instruction_id": ["keywords:existence", "keywords:frequency"], "kwargs": [{"keywords": ["AI"]}, {"keyword": "AI", "frequency": 2, "relation": "at least"}]}]',
         )
         assert reward == 0.5  # Only keyword existence passes
 
@@ -132,7 +139,7 @@ class TestIFMultipleConstraints:
             completions="Technology is evolving.",
             prompt_ids=[],
             completion_ids=[],
-            ground_truth='[{"instruction_id": ["keywords:existence", "keywords:frequency"], "kwargs": [{"keywords": ["AI"]}, {"word": "AI", "frequency": 2}]}]',
+            ground_truth='[{"instruction_id": ["keywords:existence", "keywords:frequency"], "kwargs": [{"keywords": ["AI"]}, {"keyword": "AI", "frequency": 2, "relation": "at least"}]}]',
         )
         assert reward == 0.0
 
@@ -323,18 +330,20 @@ class TestRemoveThinkingSection:
 
     def test_remove_thinking_tags(self):
         """Test removing thinking tags."""
-        result = _remove_thinking_section("Let me analyzeThe answer is 42")
+        result = _remove_thinking_section(
+            f"Let me analyze{_THINKING_START_TAG}some thinking{_THINKING_END_TAG}The answer is 42"
+        )
         assert "The answer is 42" in result
 
     def test_remove_answer_tags(self):
         """Test removing answer tags."""
-        result = _remove_thinking_section("42")
+        result = _remove_thinking_section(f"{_ANSWER_START_TAG}42{_ANSWER_END_TAG}")
         assert result == "42"
 
     def test_combined_tags(self):
         """Test removing both thinking and answer tags."""
         result = _remove_thinking_section(
-            "Analysis42"
+            f"{_THINKING_START_TAG}Analysis{_THINKING_END_TAG}{_ANSWER_START_TAG}42{_ANSWER_END_TAG}"
         )
         assert result == "42"
 
@@ -349,19 +358,24 @@ class TestRemoveThinkingSection:
         assert result == ""
 
     def test_thinking_end_tag_only(self):
-        """Test removing  tag."""
-        result = _remove_thinking_section("Some analysis hereThe answer")
+        """Test content before end tag is removed."""
+        result = _remove_thinking_section(
+            f"Some analysis here{_THINKING_END_TAG}The answer"
+        )
         assert result == "The answer"
 
     def test_thinking_start_tag_only(self):
-        """Test handling start tag without end."""
-        result = _remove_thinking_section("Let me think...")
-        # Should remove everything before the last
-        assert "think" not in result or result.strip() == ""
+        """Test handling start tag without end returns empty string."""
+        result = _remove_thinking_section(
+            f"{_THINKING_START_TAG}Let me think..."
+        )
+        assert result == ""
 
     def test_alternative_format(self):
-        """Test alternative  and  tags."""
-        result = _remove_thinking_section("AnalysisThe answer")
+        """Test thinking and answer tags combined."""
+        result = _remove_thinking_section(
+            f"{_THINKING_START_TAG}Analysis{_THINKING_END_TAG}The answer"
+        )
         assert "The answer" in result
 
 
@@ -418,7 +432,7 @@ class TestIFLengthConstraints:
         """Test word count constraint with at least."""
         reward = if_reward_fn(
             prompt="Write at least 10 words",
-            completions="This response has more than ten words in it.",
+            completions="This is a response that contains at least ten words in total for testing purposes.",
             prompt_ids=[],
             completion_ids=[],
             ground_truth='[{"instruction_id": ["length_constraints:number_words"], "kwargs": [{"num_words": 10, "relation": "at least"}]}]',
@@ -426,24 +440,24 @@ class TestIFLengthConstraints:
         assert reward == 1.0
 
     def test_word_count_at_most(self):
-        """Test word count constraint with at most."""
+        """Test word count constraint with less than."""
         reward = if_reward_fn(
-            prompt="Write at most 5 words",
+            prompt="Write less than 5 words",
             completions="Short response here.",
             prompt_ids=[],
             completion_ids=[],
-            ground_truth='[{"instruction_id": ["length_constraints:number_words"], "kwargs": [{"num_words": 5, "relation": "at most"}]}]',
+            ground_truth='[{"instruction_id": ["length_constraints:number_words"], "kwargs": [{"num_words": 5, "relation": "less than"}]}]',
         )
         assert reward == 1.0
 
     def test_word_count_too_long(self):
         """Test word count constraint fails when too long."""
         reward = if_reward_fn(
-            prompt="Write at most 5 words",
+            prompt="Write less than 5 words",
             completions="This is a very long response with many words.",
             prompt_ids=[],
             completion_ids=[],
-            ground_truth='[{"instruction_id": ["length_constraints:number_words"], "kwargs": [{"num_words": 5, "relation": "at most"}]}]',
+            ground_truth='[{"instruction_id": ["length_constraints:number_words"], "kwargs": [{"num_words": 5, "relation": "less than"}]}]',
         )
         assert reward == 0.0
 
