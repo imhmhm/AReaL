@@ -3,6 +3,7 @@
 import ast
 import json
 import re
+from typing import List, Optional
 
 from areal.utils import logging
 
@@ -54,8 +55,9 @@ def if_reward_fn(
         # Parse ground truth constraints
         constraint_dict = _parse_ground_truth(ground_truth)
 
-        # Extract answer (remove thinking section and answer tags)
-        answer = _remove_thinking_section(completions)
+        # Extract answer (remove thinking section, answer tags and stop tokens)
+        stop_tokens = kwargs.get("stop_tokens", None)
+        answer = _extract_answer(completions, stop_tokens=stop_tokens)
 
         if len(answer) == 0:
             logger.warning("Empty answer after removing thinking section")
@@ -163,13 +165,11 @@ def _parse_ground_truth(ground_truth: str) -> dict:
     return constraint_dict
 
 
-def _remove_thinking_section(prediction: str) -> str:
+def _extract_answer(prediction: str, stop_tokens: List[str] | None = None) -> str:
     """
-    Remove thinking section and answer tags from prediction.
-
-    This handles the common format where models output:
+    Remove thinking section, answer tags and stop tokens from prediction.
     <think>...analysis...</think>
-    <answer>...final answer...</answer>
+    <answer>...final answer...</answer><|im_end|>
 
     Args:
         prediction: Raw model output
@@ -178,16 +178,21 @@ def _remove_thinking_section(prediction: str) -> str:
         Cleaned answer string
     """
 
-    # split on thinking end tag and take everything after it
+    ## remove thinking section
     if _THINKING_END_TAG in prediction:
         prediction = prediction.split(_THINKING_END_TAG, 1)[-1]
-    # The thinking section is truncated
+    # return empty string if thinking section is truncated
     elif _THINKING_START_TAG in prediction:
         return ""
-
     prediction = prediction.replace(_THINKING_START_TAG, "")
-    # Remove answer tags
+
+    ## remove answer tags
     prediction = prediction.replace(_ANSWER_START_TAG, "").replace(_ANSWER_END_TAG, "")
+
+    ## remove stop tokens (at the end of the prediction)
+    if stop_tokens is not None:
+        for _token in stop_tokens:
+            prediction = prediction.replace(_token, "")
 
     return prediction.strip()
 

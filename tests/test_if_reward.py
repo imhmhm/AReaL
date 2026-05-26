@@ -2,7 +2,7 @@
 
 from areal.reward import if_reward_fn
 from areal.reward.instruction_following import (
-    _remove_thinking_section,
+    _extract_answer,
     _parse_ground_truth,
     _THINKING_START_TAG,
     _THINKING_END_TAG,
@@ -326,54 +326,54 @@ class TestIFEndConstraints:
 
 
 class TestRemoveThinkingSection:
-    """Test cases for _remove_thinking_section helper."""
+    """Test cases for _extract_answer helper."""
 
     def test_remove_thinking_tags(self):
         """Test removing thinking tags."""
-        result = _remove_thinking_section(
+        result = _extract_answer(
             f"Let me analyze{_THINKING_START_TAG}some thinking{_THINKING_END_TAG}The answer is 42"
         )
         assert "The answer is 42" in result
 
     def test_remove_answer_tags(self):
         """Test removing answer tags."""
-        result = _remove_thinking_section(f"{_ANSWER_START_TAG}42{_ANSWER_END_TAG}")
+        result = _extract_answer(f"{_ANSWER_START_TAG}42{_ANSWER_END_TAG}")
         assert result == "42"
 
     def test_combined_tags(self):
         """Test removing both thinking and answer tags."""
-        result = _remove_thinking_section(
+        result = _extract_answer(
             f"{_THINKING_START_TAG}Analysis{_THINKING_END_TAG}{_ANSWER_START_TAG}42{_ANSWER_END_TAG}"
         )
         assert result == "42"
 
     def test_no_tags(self):
         """Test input without any tags."""
-        result = _remove_thinking_section("Just plain text")
+        result = _extract_answer("Just plain text")
         assert result == "Just plain text"
 
     def test_empty_input(self):
         """Test empty input."""
-        result = _remove_thinking_section("")
+        result = _extract_answer("")
         assert result == ""
 
     def test_thinking_end_tag_only(self):
         """Test content before end tag is removed."""
-        result = _remove_thinking_section(
+        result = _extract_answer(
             f"Some analysis here{_THINKING_END_TAG}The answer"
         )
         assert result == "The answer"
 
     def test_thinking_start_tag_only(self):
         """Test handling start tag without end returns empty string."""
-        result = _remove_thinking_section(
+        result = _extract_answer(
             f"{_THINKING_START_TAG}Let me think..."
         )
         assert result == ""
 
     def test_alternative_format(self):
         """Test thinking and answer tags combined."""
-        result = _remove_thinking_section(
+        result = _extract_answer(
             f"{_THINKING_START_TAG}Analysis{_THINKING_END_TAG}The answer"
         )
         assert "The answer" in result

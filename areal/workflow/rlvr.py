@@ -65,6 +65,7 @@ class RLVRWorkflow(RolloutWorkflow):
             tokenizer = load_hf_tokenizer(self.tokenizer)
             self.tokenizer = tokenizer
         self.gconfig = gconfig.new_with_stop_and_pad_token_ids(self.tokenizer)
+        self.stop_tokens = [self.tokenizer.decode(tid) for tid in self.gconfig.stop_token_ids]
         self.enable_thinking = enable_thinking
         if not isinstance(reward_fn, str):
             self.async_reward_fn = AsyncRewardWrapper(reward_fn)
@@ -101,6 +102,7 @@ class RLVRWorkflow(RolloutWorkflow):
             resp.input_tokens,
             resp.output_tokens,
             **task_data,
+            stop_tokens=self.stop_tokens,
         )
 
         return reward

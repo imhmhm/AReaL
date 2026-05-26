@@ -1582,6 +1582,7 @@ LANGUAGE_CODES = immutabledict.immutabledict(
         "pa": "Punjabi",
         "ml": "Malayalam",
         "fi": "Finnish",
+        "zh": "Chinese",
     }
 )
 
