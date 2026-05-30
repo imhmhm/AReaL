@@ -202,6 +202,12 @@ class GenerationHyperparameters:
             "help": "Enable beam search in the vLLM engine. When enabled, sampling parameters like temperature, top-p, and top-k are auto ignored."
         },
     )
+    enable_thinking: bool = field(
+        default=False,
+        metadata={
+            "help": "Enable thinking mode when applying chat template (e.g. Qwen3 `enable_thinking` flag). Consumed by workflows, not sent to the inference engine."
+        },
+    )
     # NOTE: to add new parameters, please correctly handle them in the `to_openai_args_dict` method.
 
     def new(self, **kwargs):
@@ -248,6 +254,7 @@ class GenerationHyperparameters:
         "skip_special_tokens",  # Not supported by OpenAI
         "lora_name",  # Not supported by OpenAI
         "use_beam_search",  # Not supported by OpenAI
+        "enable_thinking",  # Chat-template flag consumed by workflows, not by OpenAI API
         "max_tokens",  # deprecated by "completions", not used in "responses", should be `max_new_tokens` in "openai-agents"
     }
 

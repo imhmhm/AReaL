@@ -52,7 +52,7 @@ def main(args):
         reward_fn="areal.reward.instruction_following.if_reward_fn",
         gconfig=config.gconfig,
         tokenizer=config.tokenizer_path,
-        enable_thinking=False,
+        enable_thinking=config.gconfig.enable_thinking,
     )
 
     # Evaluation workflow configuration (with lower temperature)
