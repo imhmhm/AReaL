@@ -127,7 +127,6 @@ def test_hf_save_load_weights(tmp_path_factory, engine, mock_input):
     save_load_meta = SaveLoadMeta(
         path=path,
         weight_format="hf",
-        tokenizer=tokenizer,
         with_optim=False,
         base_model_path=None,
     )
@@ -154,7 +153,6 @@ def test_dcp_save_load_weights(tmp_path_factory, engine, mock_input):
     save_load_meta = SaveLoadMeta(
         path=path,
         weight_format="dcp",
-        tokenizer=tokenizer,
         with_optim=True,
         base_model_path=None,
     )

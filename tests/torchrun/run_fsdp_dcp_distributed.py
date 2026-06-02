@@ -108,7 +108,6 @@ def test_simple_dcp_save_load(alloc_mode: str, output: str | None = None):
     save_load_meta = SaveLoadMeta(
         path=path,
         weight_format="dcp",
-        tokenizer=tokenizer,
         with_optim=False,
         base_model_path=None,
     )
@@ -177,7 +176,6 @@ def test_train_dcp_save_load(alloc_mode: str, output: str | None = None):
     save_load_meta = SaveLoadMeta(
         path=path,
         weight_format="dcp",
-        tokenizer=tokenizer,
         with_optim=True,
         base_model_path=None,
     )

@@ -813,8 +813,6 @@ class PPOTrainer:
             path=path,
             weight_format="hf",
             with_optim=False,
-            tokenizer=self.tokenizer,
-            processor=self.processor,
             base_model_path=self.config.actor.path,
         )
         # Save LoRA weights using engine's HuggingFace save

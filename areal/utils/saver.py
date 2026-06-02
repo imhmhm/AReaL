@@ -144,8 +144,6 @@ class Saver:
                 path=path,
                 weight_format="hf",
                 with_optim=False,
-                tokenizer=tokenizer,
-                processor=processor,
                 base_model_path=base_model_path,
             )
             engine.save(meta)
