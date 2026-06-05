@@ -20,6 +20,6 @@ python examples/math/gsm8k_rl.py \
     actor.scheduling_spec.0.env_vars.TASK_QUEUE_ENABLE=1 \
     train_dataset.path=$MTP_DATASET_HOME/hf_data/gsm8k \
     valid_dataset.path=$MTP_DATASET_HOME/hf_data/gsm8k \
-    +stats_logger.tensorboard.path=$MTP_DATASET_HOME/tensorboard/areal/${AREAL_EXPERIMENT_NAME}/${TRIAL_NAME} \
+    +stats_logger.swanlab.mode=local \
     experiment_name=$AREAL_EXPERIMENT_NAME \
     trial_name=$TRIAL_NAME
