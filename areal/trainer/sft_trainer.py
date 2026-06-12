@@ -142,6 +142,11 @@ class SFTTrainer:
 
         global_step = 0
         data_generator = cycle_dataloader(self.train_dataloader)
+
+        # Eval before training: evaluate the initial model (step 0, no gradient update)
+        if self.config.evaluator.eval_before_train and start_step == 0:
+            self._evaluate_before_train()
+
         for global_step in range(start_step, max_steps):
             if (
                 config.total_train_steps is not None
@@ -387,6 +392,13 @@ class SFTTrainer:
         )
         dist.barrier(group=self.actor.cpu_group)
         current_platform.synchronize()
+
+    def _evaluate_before_train(self):
+        """Run evaluation on the initial model before any training step."""
+        if self.valid_dataloader is None:
+            return
+        logger.info("Running evaluation before training (initial model)")
+        self._evaluate_fn()
 
     def _export_and_commit_stats(self, epoch: int, epoch_step: int, global_step: int):
         # Upload statistics to the logger (e.g., wandb)
