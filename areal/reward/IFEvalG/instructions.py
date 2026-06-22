@@ -22,6 +22,7 @@ import string
 from collections.abc import Sequence
 
 import langdetect
+import ftlangdetect
 
 from areal.reward.IFEvalG import instructions_util
 from areal.utils import logging
@@ -179,9 +180,16 @@ class ResponseLanguageChecker(Instruction):
         """
         assert isinstance(value, str)
 
+        # try:
+        #     return langdetect.detect(value) == self._language
+        # except langdetect.LangDetectException as e:
+        #     # Count as instruction is followed.
+        #     _logger.error(f"Unable to detect language for text {value} due to {e}")
+        #     return True
+
         try:
-            return langdetect.detect(value) == self._language
-        except langdetect.LangDetectException as e:
+            return ftlangdetect.detect(value)['lang'] == self._language
+        except ValueError as e:
             # Count as instruction is followed.
             _logger.error(f"Unable to detect language for text {value} due to {e}")
             return True
@@ -1356,9 +1364,16 @@ class CapitalLettersEnglishChecker(Instruction):
         """Checks that the response is in English and in all capital letters."""
         assert isinstance(value, str)
 
+        # try:
+        #     return value.isupper() and langdetect.detect(value) == "en"
+        # except langdetect.LangDetectException as e:
+        #     # Count as instruction is followed.
+        #     _logger.error(f"Unable to detect language for text {value} due to {e}")
+        #     return True
+
         try:
-            return value.isupper() and langdetect.detect(value) == "en"
-        except langdetect.LangDetectException as e:
+            return value.isupper() and ftlangdetect.detect(value)['lang'] == "en"
+        except ValueError as e:
             # Count as instruction is followed.
             _logger.error(f"Unable to detect language for text {value} due to {e}")
             return True
@@ -1385,9 +1400,16 @@ class LowercaseLettersEnglishChecker(Instruction):
         """Checks that the response is in English and in all lowercase letters."""
         assert isinstance(value, str)
 
+        # try:
+        #     return value.islower() and langdetect.detect(value) == "en"
+        # except langdetect.LangDetectException as e:
+        #     # Count as instruction is followed.
+        #     _logger.error(f"Unable to detect language for text {value} due to {e}")
+        #     return True
+
         try:
-            return value.islower() and langdetect.detect(value) == "en"
-        except langdetect.LangDetectException as e:
+            return value.islower() and ftlangdetect.detect(value)['lang'] == "en"
+        except ValueError as e:
             # Count as instruction is followed.
             _logger.error(f"Unable to detect language for text {value} due to {e}")
             return True
