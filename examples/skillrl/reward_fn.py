@@ -32,3 +32,34 @@ def search_reward_fn(
     # kwargs may carry the env reward under various keys; default 0.0 means
     # "rely on the env reward already on the trajectory".
     return float(kwargs.get("episode_reward", 0.0))
+
+
+def alfworld_reward_fn(
+    prompt: str,
+    completions: str,
+    prompt_ids: list[int],
+    completion_ids: list[int],
+    **kwargs: Any,
+) -> float:
+    """Pass-through reward for the ALFWorld env.
+
+    The reward (10 * won) is produced by ``AlfworldSingleEnvAdapter`` inside the
+    workflow and placed on the trajectory's ``rewards`` field. This fn exists
+    only so the config can point ``reward_fn=`` at a stable string path.
+    """
+    return float(kwargs.get("episode_reward", 0.0))
+
+
+def webshop_reward_fn(
+    prompt: str,
+    completions: str,
+    prompt_ids: list[int],
+    completion_ids: list[int],
+    **kwargs: Any,
+) -> float:
+    """Pass-through reward for the WebShop env.
+
+    The reward (10 * won, shaped by WebshopSingleEnvAdapter) is placed on the
+    trajectory's ``rewards`` field by the workflow. Pass-through here.
+    """
+    return float(kwargs.get("episode_reward", 0.0))

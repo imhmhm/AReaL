@@ -18,6 +18,7 @@ tokenizer_path: ${actor.path}
 
 # ---- SkillRL task config (SkillRLConfig extra fields) ----
 env:
+  env_name: search                # dispatch key in train.py
   max_steps: 8
   search:
     search_url: http://127.0.0.1:8000/retrieve   # SearchEnv retrieval backend

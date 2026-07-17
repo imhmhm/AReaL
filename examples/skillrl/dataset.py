@@ -78,3 +78,60 @@ def build_search_rl_dataset(
 
     ds = ds.map(process)
     return ds
+
+
+def _synthetic_rl_dataset(
+    data_source: str,
+    num_episodes: int,
+):
+    """Build a counter-style RL dataset (one row per episode).
+
+    ALFWorld and WebShop pick their own task/goal on env reset (the game/session
+    is not driven by the dataset row), so the dataset is just an episode
+    counter: each row is a placeholder ``{question, ground_truth, data_source}``
+    and the env provides the real task. The workflow's ``_extract_task`` reads
+    the task from the env observation.
+    """
+    from datasets import Dataset
+
+    rows = [
+        {"question": "", "ground_truth": {}, "data_source": data_source}
+        for _ in range(num_episodes)
+    ]
+    return Dataset.from_list(rows)
+
+
+def _resolve_num_episodes(dataset_config: Any, split: str, default_train: int, default_val: int) -> int:
+    """num_episodes from config (int `path` or `num_episodes` field), else default."""
+    if dataset_config is None:
+        return default_train if split != "test" else default_val
+    n = getattr(dataset_config, "num_episodes", None)
+    if n is not None:
+        return int(n)
+    path = getattr(dataset_config, "path", None)
+    if path is not None:
+        try:
+            return int(path)
+        except (TypeError, ValueError):
+            pass
+    return default_train if split != "test" else default_val
+
+
+def build_alfworld_rl_dataset(
+    split: str | None = None,
+    dataset_config: Any = None,
+    **kwargs,
+):
+    """ALFWorld RL dataset: a counter (env picks games on reset)."""
+    n = _resolve_num_episodes(dataset_config, split, default_train=1000, default_val=128)
+    return _synthetic_rl_dataset("alfworld", n)
+
+
+def build_webshop_rl_dataset(
+    split: str | None = None,
+    dataset_config: Any = None,
+    **kwargs,
+):
+    """WebShop RL dataset: a counter (env picks a goal session on reset)."""
+    n = _resolve_num_episodes(dataset_config, split, default_train=1000, default_val=128)
+    return _synthetic_rl_dataset("webshop", n)

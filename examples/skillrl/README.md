@@ -85,7 +85,15 @@ python -m examples.skillrl.train --config examples/skillrl/config_search.yaml
    evolution triggered at cadence when success_rate < threshold; new skills
    written to the train-only memory + saved to disk. Eval memory kept separate.
 3. ⬜ **Embedding mode** on NPU (`embedding_device="npu"`).
-4. ⬜ **alfworld/webshop** envs.
+4. ✅ **alfworld/webshop** envs. `SkillEnvWorkflow` refactored to a template
+   method (env hooks: `_make_env_adapter`/`projection_f`/`_build_text_obs`/
+   `_build_history`/`_extract_task`); `AlfworldEnvWorkflow`/`WebShopEnvWorkflow`
+   subclass it. Each env ships its own `SingleEnvAdapter` (no Ray) + projection
+   + prompts + (vendored) env package. `train.py` dispatches by `env.env_name`.
+   Verified at import + unit level (projection parse, prompt render, dataset
+   counter, skill-bank load + `_detect_task_type`, `_extract_task`). Full NPU
+   run pending external data/deps (textworld/$ALFWORLD_DATA for alfworld;
+   spacy/pyserini/Lucene index for webshop).
 5. ⬜ **GiGPO** step-level advantage (verify AReaL `compute_advantages` support).
 
 > Note on pillar C cadence: AReaL's `should_accept_fn` is called once per
