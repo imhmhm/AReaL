@@ -157,7 +157,7 @@ train_dataset:
   num_workers: 4
   num_episodes: 1000
   type: rl
-  max_length: 4096
+  max_length: 16384  # webshop: up to 15 steps, each turn prompt+response ~500 tokens
 
 valid_dataset:
   batch_size: 16

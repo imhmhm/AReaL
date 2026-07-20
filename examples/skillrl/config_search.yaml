@@ -158,7 +158,7 @@ train_dataset:
   num_workers: 4
   path: PeterJinGo/Search-R1-zhihu-clean
   type: rl
-  max_length: 4096
+  max_length: 8192  # search: up to 8 steps, prompt grows with full history
 
 valid_dataset:
   batch_size: 16

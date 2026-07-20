@@ -352,17 +352,22 @@ class SkillEnvWorkflow(RolloutWorkflow):
             results, valids = self.projection_f([action_str])
             env_action = results[0] if results else ""
 
-            # Accumulate training tokens: prompt (mask=0) + response (mask=1).
-            # Across turns we keep the full conversation as one sequence, but
-            # only newly-generated response tokens are trainable. For the
-            # multi-turn concat we follow MultiTurnWorkflow: append the
-            # incremental prompt tail + the response.
-            input_len = len(resp.input_tokens) - len(seq)
-            seq = list(resp.input_tokens)
-            seq += output_tokens
-            logprobs += [0.0] * input_len + output_logprobs
-            loss_mask += [0] * input_len + [1] * len(output_tokens)
-            versions += [-1] * input_len + list(output_versions)
+            # Accumulate training tokens: append this turn's prompt (mask=0) +
+            # response (mask=1). Each turn re-renders a fresh prompt (history
+            # embedded as text) and re-tokenizes it, so resp.input_tokens is
+            # NOT a strict growing prefix of seq - the MultiTurnWorkflow
+            # raw-append invariant (input_ids = input_ids + output + next_prompt)
+            # does not hold. We therefore append the FULL prompt+response per
+            # turn (no reset, no prefix assumption), which keeps loss_mask
+            # aligned with seq by construction. Concatenating prompt_i (ends
+            # with the assistant header) + output_i + prompt_{i+1} (starts with
+            # a user header) yields a valid alternating conversation; prior
+            # outputs also recur as history text inside later prompts
+            # (redundant but mask=0, so not trained twice).
+            seq += input_ids + output_tokens
+            logprobs += [0.0] * len(input_ids) + output_logprobs
+            loss_mask += [0] * len(input_ids) + [1] * len(output_tokens)
+            versions += [-1] * len(input_ids) + list(output_versions)
 
             if not env_action:
                 # Invalid action - feed empty observation, let the model retry.
