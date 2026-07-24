@@ -21,6 +21,10 @@ VALID_DATASETS = [
     "torl_data",
 ]
 
+VALID_FORMATS = [
+    "instruction_following",
+]
+
 logger = logging.getLogger("Dataset")
 
 
@@ -31,8 +35,28 @@ def _get_custom_dataset(
     max_length: int | None = None,
     tokenizer: Optional["PreTrainedTokenizerFast"] = None,
     processor: Optional["ProcessorMixin"] = None,
+    format: str | None = None,
     **kwargs,
 ) -> "Dataset":
+    # Route by format field first (takes precedence over path-based routing)
+    if format is not None:
+        if format == "instruction_following" and type == "rl":
+            from .instruction_following import get_if_rl_dataset
+
+            return get_if_rl_dataset(
+                path=path,
+                split=split,
+                tokenizer=tokenizer,
+                max_length=max_length,
+                **kwargs,
+            )
+        else:
+            raise ValueError(
+                f"Format '{format}' with training type '{type}' is not supported. "
+                f"Supported formats are: {VALID_FORMATS}."
+            )
+
+    # Fallback: route by path keyword matching
     if "gsm8k" in path and type == "sft":
         from .gsm8k import get_gsm8k_sft_dataset
 
@@ -187,13 +211,18 @@ def get_custom_dataset(
         )
 
     if dataset_config is not None:
+        # config.split takes precedence over the split argument
+        effective_split = (
+            dataset_config.split if dataset_config.split is not None else split
+        )
         return _get_custom_dataset(
             path=dataset_config.path,
             type=dataset_config.type,
-            split=split,
+            split=effective_split,
             max_length=dataset_config.max_length,
             tokenizer=tokenizer,
             processor=processor,
+            format=dataset_config.format,
             **kwargs,
         )
 
@@ -208,5 +237,6 @@ def get_custom_dataset(
 
 __all__ = [
     "VALID_DATASETS",
+    "VALID_FORMATS",
     "get_custom_dataset",
 ]

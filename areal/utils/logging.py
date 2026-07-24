@@ -78,6 +78,7 @@ LOGGER_COLORS_EXACT = {
     # Rewards - purple
     "GSM8KReward": "purple",
     "Geometry3KReward": "purple",
+    "InstructionFollowingReward": "purple",
     "RewardUtils": "purple",
     "RewardAPI": "purple",
     # Tree attention - cyan

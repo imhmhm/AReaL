@@ -232,6 +232,12 @@ class GenerationHyperparameters:
             "help": "Enable beam search in the vLLM engine. When enabled, sampling parameters like temperature, top-p, and top-k are auto ignored."
         },
     )
+    enable_thinking: bool = field(
+        default=False,
+        metadata={
+            "help": "Enable thinking mode when applying chat template (e.g. Qwen3 `enable_thinking` flag). Consumed by workflows, not sent to the inference engine."
+        },
+    )
     # NOTE: to add new parameters, please correctly handle them in the `to_openai_args_dict` method.
 
     def new(self, **kwargs):
@@ -278,6 +284,7 @@ class GenerationHyperparameters:
         "skip_special_tokens",  # Not supported by OpenAI
         "lora_name",  # Not supported by OpenAI
         "use_beam_search",  # Not supported by OpenAI
+        "enable_thinking",  # Chat-template flag consumed by workflows, not by OpenAI API
         "max_tokens",  # deprecated by "completions", not used in "responses", should be `max_new_tokens` in "openai-agents"
     }
 
@@ -2901,6 +2908,14 @@ class _DatasetConfig:
         default=None,
         metadata={
             "help": "Maximum token length of sequences in dataset. Longer sequences are filtered out."
+        },
+    )
+    format: str | None = field(
+        default=None,
+        metadata={
+            "help": "Data format for processing logic (e.g., 'instruction_following'). "
+            "When set, overrides path-based routing. "
+            "When None, routing is determined by the path field."
         },
     )
     dataset_kwargs: dict[str, Any] = field(

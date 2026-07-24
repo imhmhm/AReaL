@@ -634,6 +634,13 @@ class PPOTrainer:
         elif self._requires_proxy_workflow(workflow):
             self._ensure_proxy_started()
 
+        # Eval before training: evaluate the initial model (step 0, no gradient update)
+        if self.config.evaluator.eval_before_train and start_step == 0:
+            self._evaluate_before_train(
+                eval_workflow=eval_workflow,
+                eval_workflow_kwargs=eval_workflow_kwargs,
+            )
+
         for global_step in range(start_step, max_steps):
             if (
                 config.total_train_steps is not None
@@ -1219,8 +1226,6 @@ class PPOTrainer:
             path=path,
             weight_format="hf",
             with_optim=False,
-            tokenizer=self.tokenizer,
-            processor=self.processor,
             base_model_path=self.config.actor.path,
         )
         # Save LoRA weights using engine's HuggingFace save
@@ -1329,6 +1334,26 @@ class PPOTrainer:
         if not is_single_controller():
             dist.barrier(group=self.actor.cpu_group)
             current_platform.synchronize()
+
+    def _evaluate_before_train(
+        self,
+        eval_workflow: WorkflowLike | None,
+        eval_workflow_kwargs,
+    ):
+        """Run evaluation on the initial model before any training step."""
+        if (
+            self.eval_rollout is None
+            or self.valid_dataloader is None
+            or eval_workflow is None
+        ):
+            return
+        logger.info("Running evaluation before training (initial model)")
+        self._evaluate_fn(
+            eval_workflow=eval_workflow,
+            eval_workflow_kwargs=eval_workflow_kwargs,
+        )
+        dist.barrier(group=self.actor.cpu_group)
+        current_platform.synchronize()
 
     def _export_and_commit_stats(self, epoch: int, epoch_step: int, global_step: int):
         # Upload statistics to the logger (e.g., wandb)
