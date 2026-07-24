@@ -7,7 +7,6 @@ from typing import Any
 import torch
 import torch.distributed as dist
 from torch.distributed.tensor import DTensor
-from transformers import AutoTokenizer
 
 from tests.utils import get_model_path
 
@@ -93,7 +92,6 @@ def test_simple_dcp_save_load(alloc_mode: str, output: str | None = None):
 
     print(f"Running simple DCP save/load test on rank {rank}")
 
-    tokenizer = AutoTokenizer.from_pretrained(MODEL_PATH)
     mb_spec = MicroBatchSpec(max_tokens_per_mb=256)
     engine = make_fsdp_engine(alloc_mode, mb_spec, init_optimizer=False)
 
@@ -110,7 +108,6 @@ def test_simple_dcp_save_load(alloc_mode: str, output: str | None = None):
     save_load_meta = SaveLoadMeta(
         path=path,
         weight_format="dcp",
-        tokenizer=tokenizer,
         with_optim=False,
         base_model_path=None,
     )
@@ -160,7 +157,6 @@ def test_train_dcp_save_load(alloc_mode: str, output: str | None = None):
     rank = int(os.environ["RANK"])
     print(f"Running train DCP save/load test on rank {rank}")
 
-    tokenizer = AutoTokenizer.from_pretrained(MODEL_PATH)
     mb_spec = MicroBatchSpec(max_tokens_per_mb=256)
     engine = make_fsdp_engine(alloc_mode, mb_spec, init_optimizer=True)
 
@@ -179,7 +175,6 @@ def test_train_dcp_save_load(alloc_mode: str, output: str | None = None):
     save_load_meta = SaveLoadMeta(
         path=path,
         weight_format="dcp",
-        tokenizer=tokenizer,
         with_optim=True,
         base_model_path=None,
     )

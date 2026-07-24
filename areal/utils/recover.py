@@ -351,8 +351,6 @@ class RecoverHandler:
             path=path,
             weight_format=weight_format,
             with_optim=with_optim,
-            tokenizer=tokenizer,
-            processor=processor,
             base_model_path=base_model_path,
         )
         engine.save(meta)
@@ -379,8 +377,6 @@ class RecoverHandler:
             path=path,
             weight_format=weight_format,
             with_optim=with_optim,
-            tokenizer=None,
-            processor=None,
             base_model_path=None,
         )
         engine.load(meta)

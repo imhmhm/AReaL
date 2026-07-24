@@ -6,7 +6,6 @@ from typing import Any
 import pytest
 import torch
 import torch.distributed as dist
-from transformers import AutoTokenizer
 
 from tests.utils import get_model_path
 
@@ -124,12 +123,10 @@ def test_simple_train(engine, mock_input):
 
 @torch.no_grad()
 def test_hf_save_load_weights(tmp_path_factory, engine, mock_input):
-    tokenizer = AutoTokenizer.from_pretrained(MODEL_PATH)
     path = tmp_path_factory.mktemp("hf_engine_test")
     save_load_meta = SaveLoadMeta(
         path=path,
         weight_format="hf",
-        tokenizer=tokenizer,
         with_optim=False,
         base_model_path=None,
     )
@@ -151,12 +148,10 @@ def test_hf_save_load_weights(tmp_path_factory, engine, mock_input):
 @torch.no_grad()
 @pytest.mark.slow
 def test_dcp_save_load_weights(tmp_path_factory, engine, mock_input):
-    tokenizer = AutoTokenizer.from_pretrained(MODEL_PATH)
     path = tmp_path_factory.mktemp("megatron_engine_dcp_test")
     save_load_meta = SaveLoadMeta(
         path=path,
         weight_format="dcp",
-        tokenizer=tokenizer,
         with_optim=True,
         base_model_path=None,
     )

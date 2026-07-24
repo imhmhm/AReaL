@@ -8,7 +8,6 @@ from unittest.mock import MagicMock
 import pytest
 import torch
 import torch.distributed as dist
-from transformers import AutoTokenizer
 
 from tests.utils import get_model_path
 
@@ -202,12 +201,10 @@ def test_train_batch(engine, mock_input):
 
 @torch.no_grad()
 def test_hf_save_load_weights(tmp_path_factory, engine, mock_input):
-    tokenizer = AutoTokenizer.from_pretrained(MODEL_PATH)
     path = tmp_path_factory.mktemp("hf_engine_test")
     save_load_meta = SaveLoadMeta(
         path=path,
         weight_format="hf",
-        tokenizer=tokenizer,
         with_optim=True,
         base_model_path=None,
     )
@@ -227,12 +224,10 @@ def test_hf_save_load_weights(tmp_path_factory, engine, mock_input):
 @torch.no_grad()
 @pytest.mark.slow
 def test_dcp_save_load_weights(tmp_path_factory, engine, mock_input):
-    tokenizer = AutoTokenizer.from_pretrained(MODEL_PATH)
     path = tmp_path_factory.mktemp("dcp_engine_test")
     save_load_meta = SaveLoadMeta(
         path=path,
         weight_format="dcp",
-        tokenizer=tokenizer,
         with_optim=True,
         base_model_path=None,
     )

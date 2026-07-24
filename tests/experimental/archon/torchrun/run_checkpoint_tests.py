@@ -121,7 +121,6 @@ def test_save_hf_dense(model_path: str, output: str | None = None) -> bool:
             path=output_dir,
             weight_format="hf",
             with_optim=False,
-            tokenizer=engine.tokenizer,
         )
         engine.save(save_meta)
 
@@ -245,7 +244,6 @@ def test_save_load_forward_match(model_path: str, output: str | None = None) -> 
             path=output_dir,
             weight_format="hf",
             with_optim=False,
-            tokenizer=engine.tokenizer,
         )
         engine.save(save_meta)
         print_rank0(f"Checkpoint saved to {output_dir}")
@@ -412,7 +410,6 @@ def test_save_load_forward_match_with_compile_ac(
             path=output_dir,
             weight_format="hf",
             with_optim=False,
-            tokenizer=engine.tokenizer,
         )
         engine.save(save_meta)
         print_rank0(f"Checkpoint saved to {output_dir}")
@@ -546,7 +543,6 @@ def test_moe_checkpoint(model_path: str, output: str | None = None) -> bool:
             path=output_dir,
             weight_format="hf",
             with_optim=False,
-            tokenizer=engine.tokenizer,
         )
         engine.save(save_meta)
 

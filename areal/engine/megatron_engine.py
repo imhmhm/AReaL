@@ -965,8 +965,8 @@ class MegatronEngine(TrainEngine):
                     )
                 self._save_model_to_hf(
                     meta.path,
-                    tokenizer=meta.tokenizer,
-                    processor=meta.processor,
+                    tokenizer=self.tokenizer,
+                    processor=None,
                     base_model_path=meta.base_model_path,
                 )
             elif meta.weight_format == "dcp":

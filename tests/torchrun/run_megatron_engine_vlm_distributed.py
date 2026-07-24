@@ -217,8 +217,6 @@ def test_vlm_save_load(backend: str, save_dir: str, output: str | None = None):
         meta = SaveLoadMeta(
             path=Path(save_dir),
             weight_format="hf",
-            tokenizer=engine.tokenizer,
-            processor=engine.processor,
             with_optim=False,
             base_model_path=None,
         )
@@ -283,7 +281,6 @@ def test_vlm_dcp_save_load(backend: str, output: str | None = None):
     meta = SaveLoadMeta(
         path=save_path,
         weight_format="dcp",
-        tokenizer=engine.tokenizer,
         with_optim=False,
         base_model_path=None,
     )

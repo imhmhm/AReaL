@@ -382,8 +382,6 @@ def test_train_dcp_save_load(
     if rank == 0:
         os.makedirs(path, exist_ok=True)
 
-    tokenizer = AutoTokenizer.from_pretrained(MODEL_PATHS[model_type])
-
     mb_spec = MicroBatchSpec(max_tokens_per_mb=256)
     engine = make_engine(
         model_type, alloc_mode, mb_spec, init_optimizer=True, vpp_size=vpp_size
@@ -402,7 +400,6 @@ def test_train_dcp_save_load(
     save_load_meta = SaveLoadMeta(
         path=path,
         weight_format="dcp",
-        tokenizer=tokenizer,
         with_optim=True,
         base_model_path=None,
     )
@@ -488,8 +485,6 @@ def test_simple_dcp_save_load(
     if rank == 0:
         os.makedirs(path, exist_ok=True)
 
-    tokenizer = AutoTokenizer.from_pretrained(MODEL_PATHS[model_type])
-
     mb_spec = MicroBatchSpec(max_tokens_per_mb=256)
     engine = make_engine(
         model_type, alloc_mode, mb_spec, init_optimizer=True, vpp_size=vpp_size
@@ -501,7 +496,6 @@ def test_simple_dcp_save_load(
     save_load_meta = SaveLoadMeta(
         path=path,
         weight_format="dcp",
-        tokenizer=tokenizer,
         with_optim=False,
         base_model_path=None,
     )
@@ -559,8 +553,6 @@ def test_train_hf_save_load(
     if rank == 0:
         os.makedirs(save_dir, exist_ok=True)
 
-    tokenizer = AutoTokenizer.from_pretrained(MODEL_PATHS[model_type])
-
     skip_train = _MODEL_SAVELOAD_SKIP_TRAIN.get(model_type, False)
     mb_spec = MicroBatchSpec(max_tokens_per_mb=256)
     engine = make_engine(
@@ -570,6 +562,7 @@ def test_train_hf_save_load(
         init_optimizer=not skip_train,
         vpp_size=vpp_size,
     )
+    tokenizer = AutoTokenizer.from_pretrained(MODEL_PATHS[model_type])
 
     seeding.set_random_seed(0, key=f"trainer{rank}")
 
