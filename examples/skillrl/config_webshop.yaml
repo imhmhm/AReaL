@@ -23,6 +23,8 @@ env:
   env_name: webshop               # dispatch key in train.py
   max_steps: 15
   history_length: 2               # last N (obs, action) pairs rendered as action_history
+  train_num_episodes: 1000        # counter-dataset rows per train epoch (env picks a goal on reset)
+  val_num_episodes: 128           # counter-dataset rows per eval
   webshop:
     use_small: true               # use the 1000-item subset (faster); false -> full
     human_goals: false
@@ -126,6 +128,11 @@ ref:
   mb_spec:
     max_tokens_per_mb: 10240
   optimizer: null
+  # ref is the reference policy: forward-pass for logprobs only, never applies
+  # importance-weight filtering. Declare disabled/null to match reality and
+  # silence the schema warning (it defaults to cap=5.0 + token_mask otherwise).
+  behave_imp_weight_mode: disabled
+  behave_imp_weight_cap: null
   scheduling_strategy:
     type: colocation
     target: actor
@@ -149,21 +156,22 @@ sglang:
   mem_fraction_static: 0.8
 
 # WebShop is env-driven: the env picks a goal session on reset, so the dataset
-# is a counter (num_episodes rows). No external QA dataset needed.
+# is a counter (one row per episode). The episode count is set on `env`
+# (train_num_episodes / val_num_episodes); no external QA dataset is needed.
 train_dataset:
+  path: webshop                  # required by TrainDatasetConfig schema; unused (counter dataset, pre-built in train.py)
   batch_size: 16
   shuffle: true
   pin_memory: true
   num_workers: 4
-  num_episodes: 1000
   type: rl
   max_length: 16384  # webshop: up to 15 steps, each turn prompt+response ~500 tokens
 
 valid_dataset:
+  path: webshop                  # required by schema; unused (counter dataset)
   batch_size: 16
   pin_memory: true
   num_workers: 4
-  num_episodes: 128
   type: rl
 
 saver:

@@ -19,6 +19,7 @@ insert this package's parent (``env_package/alfworld/``) at the FRONT of
 
 import os
 import sys
+import threading
 
 _THIS_DIR = os.path.dirname(os.path.abspath(__file__))
 # env_package/alfworld/ holds the vendored alfworld/ package -> front of path.
@@ -42,6 +43,57 @@ def compute_reward(info, multi_modal=False):
     return 10.0 * float(info["won"])
 
 
+class _AlfworldEnvPool:
+    """Process-level pool of textworld gym envs over ONE shared ``AlfredTWEnv``.
+
+    ``AlfredTWEnv.__init__`` runs ``collect_game_files`` -- a ~20s scan of all
+    8810 game files (the tqdm bar at alfred_tw_env.py:154). AReaL re-instantiates
+    the workflow per rollout task and runs ``group_size`` episodes concurrently,
+    so building a fresh ``AlfredTWEnv`` per episode re-scans every time. We build
+    the ``AlfredTWEnv`` ONCE per worker process (keyed by config path + train/eval
+    split) and hand out cheap ``init_env(batch_size=1)`` gym envs from a pool,
+    recycling them across episodes (``reset()`` picks a new game each call). This
+    mirrors original SkillRL's ``build_alfworld_envs`` (build a pool once, reuse).
+    """
+
+    def __init__(self, alf_config_path: str, train_eval: str):
+        from alfworld.agents.environment import get_environment
+
+        config = load_config_file(alf_config_path)
+        env_type = config["env"]["type"]  # 'AlfredTWEnv'
+        self.base_env = get_environment(env_type)(config, train_eval=train_eval)
+        self.multi_modal = env_type == "AlfredThorEnv"
+        self._free: list = []
+        self._lock = threading.Lock()
+
+    def acquire(self):
+        # Pop a recycled gym env if available; else create one. init_env is cheap
+        # (no file rescan -- game_files already collected), and creating it under
+        # the lock serializes gym-env registration safely. Once the pool warms up
+        # to group_size, acquires are just a pop.
+        with self._lock:
+            if self._free:
+                return self._free.pop()
+            return self.base_env.init_env(batch_size=1)
+
+    def release(self, env):
+        with self._lock:
+            self._free.append(env)
+
+
+_POOLS: dict[tuple[str, str], _AlfworldEnvPool] = {}
+_POOLS_LOCK = threading.Lock()
+
+
+def _get_pool(alf_config_path: str, train_eval: str) -> _AlfworldEnvPool:
+    """Get (building once per process) the pool for this config + train/eval split."""
+    key = (alf_config_path, train_eval)
+    with _POOLS_LOCK:
+        if key not in _POOLS:
+            _POOLS[key] = _AlfworldEnvPool(alf_config_path, train_eval)
+        return _POOLS[key]
+
+
 class AlfworldSingleEnvAdapter:
     """Single-trajectory adapter over an ``AlfredTWEnv`` textworld gym env.
 
@@ -56,22 +108,21 @@ class AlfworldSingleEnvAdapter:
     """
 
     def __init__(self, env_config, seed: int = 0, is_train: bool = True):
-        from alfworld.agents.environment import get_environment
-
         alf_cfg = env_config.get("alfworld", {}) or {}
         # Resolve config_tw.yaml (default: the vendored one next to this file).
         alf_config_path = alf_cfg.get("alf_config_path") or os.path.join(
             _THIS_DIR, "configs", "config_tw.yaml"
         )
         eval_dataset = alf_cfg.get("eval_dataset", "eval_in_distribution")
+        train_eval = "train" if is_train else eval_dataset
 
-        config = load_config_file(alf_config_path)
-        env_type = config["env"]["type"]  # 'AlfredTWEnv'
-        base_env = get_environment(env_type)(
-            config, train_eval="train" if is_train else eval_dataset
-        )
-        self.multi_modal = env_type == "AlfredThorEnv"
-        self.env = base_env.init_env(batch_size=1)
+        # Borrow a (recycled) gym env from the process-level pool. The expensive
+        # AlfredTWEnv (20s game-file scan) is built once per process inside the
+        # pool; each adapter only gets a cheap init_env gym env and returns it on
+        # close() for reuse by a later episode.
+        self._pool = _get_pool(alf_config_path, train_eval)
+        self.multi_modal = self._pool.multi_modal
+        self.env = self._pool.acquire()
         try:
             self.env.seed(seed)
         except Exception:  # noqa: BLE001
@@ -89,15 +140,17 @@ class AlfworldSingleEnvAdapter:
         # is parsed from the textworld observation by _extract_task.
         obs, infos = self.env.reset()
         info = self._unwrap_infos(infos)
-        obs_text = obs[0] if isinstance(obs, list) else obs
+        # textworld.gym batches by batch_size=1; obs is a list OR tuple `(obs_str,)`
+        # depending on the textworld/gym version -- accept both.
+        obs_text = obs[0] if isinstance(obs, (list, tuple)) else obs
         return obs_text, info
 
     def step(self, action: str) -> tuple[str, float, bool, dict]:
         obs, scores, dones, infos = self.env.step([action])
         info = self._unwrap_infos(infos)
-        obs_text = obs[0] if isinstance(obs, list) else obs
+        obs_text = obs[0] if isinstance(obs, (list, tuple)) else obs
         reward = compute_reward(info, self.multi_modal)
-        done = bool(dones[0] if isinstance(dones, list) else dones)
+        done = bool(dones[0] if isinstance(dones, (list, tuple)) else dones)
         return obs_text, reward, done, info
 
     @property
@@ -109,8 +162,13 @@ class AlfworldSingleEnvAdapter:
     def close(self):
         if self._closed:
             return
+        # Return the gym env to the pool for reuse by a later episode. Do NOT
+        # close it: the shared AlfredTWEnv + textworld envs live for the process
+        # (cleaned up at exit), and reset() re-initializes per-episode state.
         try:
-            self.env.close()
+            if self.env is not None:
+                self._pool.release(self.env)
         except Exception:  # noqa: BLE001
             pass
+        self.env = None
         self._closed = True

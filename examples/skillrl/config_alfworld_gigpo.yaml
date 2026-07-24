@@ -1,6 +1,20 @@
-# SkillRL on AReaL - ALFWorld task (template retrieval mode, GRPO, NPU/vLLM)
+# SkillRL on AReaL - ALFWorld task (template retrieval mode, GiGPO, NPU/vLLM)
 #
-experiment_name: skillrl-alfworld
+# GiGPO (Group-in-Group) variant of config_alfworld.yaml. Differences vs GRPO:
+#   - gigpo.enable: true               -> train.py selects SkillPPOTrainer +
+#     SkillFSDPPPOActor (GiGPO advantage branch) and installs a
+#     SkillGigpoNormConfig on actor.reward_norm (param carrier; no-op norm).
+#   - actor.reward_norm: null          -> GiGPO does its own two-level norm.
+#   - actor.adv_norm: null             -> no batch advantage norm (GiGPO is
+#     outcome-based; A^E+ω·A^S is already normalized).
+#   - actor.reward_scaling/bias: 1.0/0.0  -> do not rescale the pre-computed
+#     per-row advantage (train.py enforces this regardless).
+#   - actor.reward_clip: 1000.0        -> default 20 would truncate GiGPO
+#     advantages.
+#   - gigpo.gamma: 0.95, mode: mean_std_norm  -> faithful to run_alfworld.sh.
+# See github/doc/SkillRL_GiGPO_适配AReaL方案.md.
+#
+experiment_name: skillrl-alfworld-gigpo
 trial_name: trial0
 
 seed: 1
@@ -29,6 +43,15 @@ skills_only_memory:
   skill_update_freq: 16           # evolve every N trajectories (≈ 1 train step @ batch 16)
   embedding_device: cpu
 
+# ---- GiGPO advantage config (read by train.py) ----
+gigpo:
+  enable: true
+  step_advantage_w: 1.0           # ω in Eq. 8 (paper uses 1.0, no tuning)
+  mode: mean_std_norm             # faithful to run_alfworld.sh (shipped script)
+  gamma: 0.95                     # Eq. 5 discount (alfworld shipped: 0.95)
+  enable_similarity: false        # Phase 1: exact-match anchor grouping only (alfworld)
+  similarity_thresh: 0.95         # unused when enable_similarity=false (Phase 3: search)
+
 cluster:
   n_nodes: 1
   n_gpus_per_node: 8
@@ -56,7 +79,7 @@ rollout:
   dump_to_file: false
 
 gconfig:
-  n_samples: 8                    # GRPO group size (replaces SkillRL's env.rollout.n)
+  n_samples: 8                    # GRPO/GiGPO group size (replaces SkillRL's env.rollout.n)
   min_new_tokens: 0
   max_new_tokens: 512
   greedy: false
@@ -84,20 +107,18 @@ actor:
     warmup_steps_proportion: 0.001
   eps_clip: 0.4
   temperature: ${gconfig.temperature}
-  reward_scaling: 10.0
-  reward_bias: -0.5
+  # GiGPO: pre-computed per-row advantage is transported via the GAE path; do
+  # not rescale / re-normalize it. (train.py enforces these regardless.)
+  reward_scaling: 1.0
+  reward_bias: 0.0
   kl_ctl: 0.0
-  ppo_n_minibatches: 1
+  reward_clip: 1000.0             # default 20 would truncate GiGPO advantages
+  ppo_n_minibatches: 1            # GiGPO needs the full prompt block in compute_advantages
   recompute_logprob: true
   use_decoupled_loss: true
   behave_imp_weight_cap: 5.0
-  reward_norm:
-    mean_level: group
-    std_level: group
-    group_size: ${gconfig.n_samples}
-  adv_norm:
-    mean_level: batch
-    std_level: batch
+  reward_norm: null               # GiGPO installs a SkillGigpoNormConfig (no-op norm) in train.py
+  adv_norm: null                  # GiGPO advantage is already normalized (A^E+ω·A^S)
   max_new_tokens: ${gconfig.max_new_tokens}
   scheduling_spec:
     - task_type: worker
@@ -128,9 +149,6 @@ ref:
   mb_spec:
     max_tokens_per_mb: 10240
   optimizer: null
-  # ref is the reference policy: forward-pass for logprobs only, never applies
-  # importance-weight filtering. Declare disabled/null to match reality and
-  # silence the schema warning (it defaults to cap=5.0 + token_mask otherwise).
   behave_imp_weight_mode: disabled
   behave_imp_weight_cap: null
   scheduling_strategy:

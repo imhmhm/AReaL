@@ -1,6 +1,28 @@
-# SkillRL on AReaL - ALFWorld task (template retrieval mode, GRPO, NPU/vLLM)
+# SkillRL on AReaL - WebShop task (template retrieval mode, GiGPO, NPU/vLLM)
 #
-experiment_name: skillrl-alfworld
+# GiGPO variant of config_webshop.yaml. Differences vs GRPO:
+#   - gigpo.enable: true               -> train.py selects SkillPPOTrainer +
+#     SkillFSDPPPOActor (GiGPO advantage branch) and installs a
+#     SkillGigpoNormConfig on actor.reward_norm (param carrier; no-op norm).
+#   - actor.reward_norm: null          -> GiGPO does its own two-level norm.
+#   - actor.adv_norm: null             -> GiGPO advantage already normalized.
+#   - actor.reward_scaling/bias: 1.0/0.0, reward_clip: 1000.0  -> do not
+#     rescale/clip the pre-computed per-row advantage (train.py enforces this).
+#   - gigpo.mode: mean_norm            -> faithful to run_webshop.sh (webshop
+#     uses mean_norm; alfworld uses mean_std_norm).
+#   - skills_only_memory.enable_dynamic_update: false  -> pillar C (skill
+#     evolution) is unsupported on AReaL (train.py fail-fasts); the GRPO
+#     webshop config had this true (latent crash). GiGPO is advantage-only.
+# See github/doc/SkillRL_GiGPO_适配AReaL方案.md (Phase 2).
+#
+# Run (after preparing WebShop data via env_package/webshop/webshop/setup.sh):
+#   python -m examples.skillrl.train --config examples/skillrl/config_webshop_gigpo.yaml
+# External runtime deps (NOT vendored; prepare via webshop/setup.sh):
+#   - data/items_shuffle[_1000].json, items_ins_v2[_1000].json, items_human_ins.json
+#   - search_engine/indexes/ (Lucene index)
+#   - spacy en_core_web_sm, pyserini (+ Java 11), thefuzz, flask, bs4
+
+experiment_name: skillrl-webshop-gigpo
 trial_name: trial0
 
 seed: 1
@@ -10,24 +32,34 @@ tokenizer_path: ${actor.path}
 
 # ---- SkillRL task config (SkillRLConfig extra fields) ----
 env:
-  env_name: alfworld              # dispatch key in train.py
-  max_steps: 50
+  env_name: webshop               # dispatch key in train.py
+  max_steps: 15
   history_length: 2               # last N (obs, action) pairs rendered as action_history
-  train_num_episodes: 1000        # counter-dataset rows per train epoch (env picks games on reset)
+  train_num_episodes: 1000        # counter-dataset rows per train epoch (env picks a goal on reset)
   val_num_episodes: 128           # counter-dataset rows per eval
-  alfworld:
-    eval_dataset: eval_in_distribution
+  webshop:
+    use_small: true               # use the 1000-item subset (faster); false -> full
+    human_goals: false
 
 skills_only_memory:
-  skills_json_path: examples/skillrl/memory_data/alfworld/claude_style_skills.json
-  retrieval_mode: template        # NPU-first: template (zero GPU). embedding mode later.
+  skills_json_path: examples/skillrl/memory_data/webshop/claude_style_skills.json
+  retrieval_mode: template
   top_k: 6
   task_specific_top_k: 4
-  enable_dynamic_update: false     # pillar C: recursive skill evolution
+  enable_dynamic_update: false     # pillar C unsupported on AReaL (train.py fail-fasts); GiGPO is advantage-only
   update_threshold: 0.4
   max_new_skills: 3
-  skill_update_freq: 16           # evolve every N trajectories (≈ 1 train step @ batch 16)
+  skill_update_freq: 16
   embedding_device: cpu
+
+# ---- GiGPO advantage config (read by train.py) ----
+gigpo:
+  enable: true
+  step_advantage_w: 1.0           # ω in Eq. 8 (paper uses 1.0, no tuning)
+  mode: mean_norm                 # faithful to run_webshop.sh (webshop uses mean_norm)
+  gamma: 0.95                     # Eq. 5 discount (webshop shipped: 0.95)
+  enable_similarity: false        # exact-match anchor grouping only (webshop)
+  similarity_thresh: 0.95         # unused when enable_similarity=false (Phase 3: search)
 
 cluster:
   n_nodes: 1
@@ -56,9 +88,9 @@ rollout:
   dump_to_file: false
 
 gconfig:
-  n_samples: 8                    # GRPO group size (replaces SkillRL's env.rollout.n)
+  n_samples: 8                    # GRPO/GiGPO group size
   min_new_tokens: 0
-  max_new_tokens: 512
+  max_new_tokens: 768
   greedy: false
   temperature: 1.0
 
@@ -84,20 +116,18 @@ actor:
     warmup_steps_proportion: 0.001
   eps_clip: 0.4
   temperature: ${gconfig.temperature}
-  reward_scaling: 10.0
-  reward_bias: -0.5
+  # GiGPO: pre-computed per-row advantage transported via the GAE path; do not
+  # rescale / re-normalize it. (train.py enforces these regardless.)
+  reward_scaling: 1.0
+  reward_bias: 0.0
   kl_ctl: 0.0
-  ppo_n_minibatches: 1
+  reward_clip: 1000.0             # default 20 would truncate GiGPO advantages
+  ppo_n_minibatches: 1            # GiGPO needs the full prompt block in compute_advantages
   recompute_logprob: true
   use_decoupled_loss: true
   behave_imp_weight_cap: 5.0
-  reward_norm:
-    mean_level: group
-    std_level: group
-    group_size: ${gconfig.n_samples}
-  adv_norm:
-    mean_level: batch
-    std_level: batch
+  reward_norm: null               # GiGPO installs a SkillGigpoNormConfig (no-op norm) in train.py
+  adv_norm: null                  # GiGPO advantage is already normalized (A^E+ω·A^S)
   max_new_tokens: ${gconfig.max_new_tokens}
   scheduling_spec:
     - task_type: worker
@@ -105,18 +135,7 @@ actor:
       gpu: 1
       mem: 32
       cmd: python3 -m areal.infra.rpc.rpc_server
-      env_vars:
-        VLLM_USE_V1: "1"
-        VLLM_ALLOW_LONG_MAX_MODEL_LEN: "1"
-        TASK_QUEUE_ENABLE: "2"
-        HCCL_EXEC_TIMEOUT: "14400"
-        HCCL_OP_EXPANSION_MODE: "HOST"
-        ACL_DEVICE_SYNC_TIMEOUT: "14400"
-        HCCL_EVENT_TIMEOUT: "14500"
-        HCCL_ASYNC_ERROR_HANDLING: "0"
-        ACL_STREAM_TIMEOUT: "14500000"
-        HCCL_CONNECT_TIMEOUT: "7200"
-        PYTORCH_NPU_ALLOC_CONF: "expandable_segments:True"
+      env_vars: {}
 
 ref:
   experiment_name: ${experiment_name}
@@ -128,9 +147,6 @@ ref:
   mb_spec:
     max_tokens_per_mb: 10240
   optimizer: null
-  # ref is the reference policy: forward-pass for logprobs only, never applies
-  # importance-weight filtering. Declare disabled/null to match reality and
-  # silence the schema warning (it defaults to cap=5.0 + token_mask otherwise).
   behave_imp_weight_mode: disabled
   behave_imp_weight_cap: null
   scheduling_strategy:
@@ -155,20 +171,20 @@ sglang:
   context_length: 32768
   mem_fraction_static: 0.8
 
-# ALFWorld is env-driven: the env picks its own game on reset, so the dataset
+# WebShop is env-driven: the env picks a goal session on reset, so the dataset
 # is a counter (one row per episode). The episode count is set on `env`
 # (train_num_episodes / val_num_episodes); no external QA dataset is needed.
 train_dataset:
-  path: alfworld                 # required by TrainDatasetConfig schema; unused (counter dataset, pre-built in train.py)
+  path: webshop                  # required by TrainDatasetConfig schema; unused (counter dataset, pre-built in train.py)
   batch_size: 16
   shuffle: true
   pin_memory: true
   num_workers: 4
   type: rl
-  max_length: 32768  # alfworld: up to 50 steps, each turn prompt+response ~500 tokens
+  max_length: 16384  # webshop: up to 15 steps, each turn prompt+response ~500 tokens
 
 valid_dataset:
-  path: alfworld                 # required by schema; unused (counter dataset)
+  path: webshop                  # required by schema; unused (counter dataset)
   batch_size: 16
   pin_memory: true
   num_workers: 4

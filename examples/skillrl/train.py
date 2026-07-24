@@ -23,15 +23,14 @@ from areal import PPOTrainer
 from areal.api.cli_args import load_expr_config
 from areal.utils.hf_utils import load_hf_tokenizer
 
-from .configs import SkillRLConfig
+from .configs import SkillGigpoNormConfig, SkillRLConfig
 from .dataset import (
     build_alfworld_rl_dataset,
     build_search_rl_dataset,
     build_webshop_rl_dataset,
 )
-from .memory import SkillsOnlyMemory
+from .gigpo_trainer import SkillPPOTrainer
 from .skill_env_workflow import AlfworldEnvWorkflow, SkillEnvWorkflow, WebShopEnvWorkflow
-from .skill_hooks import SkillEvolutionController
 
 
 # env_name -> (workflow class, dataset loader, reward_fn string path)
@@ -43,7 +42,14 @@ ENV_REGISTRY = {
 
 
 def _build_memory(skills_cfg: dict):
-    """Construct a SkillsOnlyMemory from config kwargs."""
+    """Construct a SkillsOnlyMemory from config kwargs.
+
+    Kept for reference; on AReaL the workflow builds its own read-only memory on
+    each worker from the `skills_only_memory` config (see main()), since a built
+    SkillsOnlyMemory is not JSON-serializable across the rollout-worker boundary.
+    """
+    from .memory import SkillsOnlyMemory
+
     return SkillsOnlyMemory(
         skills_json_path=skills_cfg["skills_json_path"],
         retrieval_mode=skills_cfg.get("retrieval_mode", "template"),
@@ -66,31 +72,48 @@ def main(args):
         )
     workflow_cls, dataset_builder, reward_fn_str = ENV_REGISTRY[env_name]
 
-    train_dataset = dataset_builder(split="train", dataset_config=config.train_dataset)
-    valid_dataset = dataset_builder(split="test", dataset_config=config.valid_dataset)
+    # num_episodes for the env-driven counter datasets (alfworld/webshop) lives
+    # on the free-form `env` config as train_num_episodes / val_num_episodes,
+    # because TrainDatasetConfig is a strict dataclass with no num_episodes key.
+    # search ignores the kwarg (its builder has **kwargs).
+    train_dataset = dataset_builder(
+        split="train",
+        dataset_config=config.train_dataset,
+        num_episodes=env_cfg.get("train_num_episodes"),
+    )
+    valid_dataset = dataset_builder(
+        split="test",
+        dataset_config=config.valid_dataset,
+        num_episodes=env_cfg.get("val_num_episodes"),
+    )
 
-    # ★ Pillar B/C: build a SHARED skill memory + evolution controller.
-    # Train and eval get separate memory instances so new skills (written only
-    # into the train memory) cannot inflate validation scores (anti-leakage).
+    # ---- Skill memory wiring -----------------------------------------------
+    # AReaL runs the RolloutWorkflow on rollout WORKERS, instantiated from a
+    # string path + JSON-serialized kwargs. So workflow_kwargs must be entirely
+    # JSON-serializable: a built SkillsOnlyMemory / SkillEvolutionController
+    # object CANNOT be passed here (it raises "Object of type SkillsOnlyMemory
+    # is not JSON serializable" at submit time).
+    #
+    # Pillar B (retrieval): supported. The workflow rebuilds a read-only memory
+    # on each worker from the `skills_only_memory` config dict (its __init__
+    # `elif skills_only_memory is not None` branch). Train and eval workflows
+    # build separate instances, so eval can't be inflated by train-side writes.
+    #
+    # Pillar C (evolution): NOT yet supported on AReaL. Evolution needs shared
+    # mutable state (failure buffer + skill memory) aggregated across all
+    # trajectories on the driver, but both touchpoints -- the workflow's
+    # evolution_controller object and the dynamic_filter_fn closure -- are
+    # non-JSON-serializable, and worker-side state would not round-trip back.
     enable_evolution = skills_cfg.get("enable_dynamic_update", False)
-    train_memory = _build_memory(skills_cfg) if skills_cfg else None
-    eval_memory = _build_memory(skills_cfg) if skills_cfg else None
-
-    evolution_controller = None
-    dynamic_filter_fn = None
-    if enable_evolution and train_memory is not None:
-        evolution_controller = SkillEvolutionController(
-            memory=train_memory,
-            update_threshold=skills_cfg.get("update_threshold", 0.4),
-            max_new_skills=skills_cfg.get("max_new_skills", 3),
-            skill_update_freq=skills_cfg.get("skill_update_freq", 5),
-            save_dir=str(config.cluster.fileroot) + "/skill_evolution",
+    if enable_evolution:
+        raise NotImplementedError(
+            "SkillRL skill evolution (skills_only_memory.enable_dynamic_update=true) "
+            "is not yet supported on AReaL: the evolution controller and its shared "
+            "memory cannot be JSON-serialized to rollout workers, and worker-side "
+            "state would not round-trip back to the driver. Set "
+            "enable_dynamic_update=false to run retrieval-only (pillar B)."
         )
-        # AReaL calls this once per trajectory - side effect: drive evolution.
-        dynamic_filter_fn = evolution_controller.make_should_accept_fn()
 
-    # Inject the (possibly evolved) shared memory + controller into the train
-    # workflow. Eval workflow gets its own memory, no controller, is_train=False.
     base_workflow_kwargs = dict(
         reward_fn=reward_fn_str,
         gconfig=config.gconfig,
@@ -100,18 +123,79 @@ def main(args):
         skills_only_memory=skills_cfg if skills_cfg else None,
     )
 
+    # NOTE: do NOT add `memory` or `evolution_controller` here -- they are live
+    # objects and not JSON-serializable. The workflow constructs its read-only
+    # memory from `skills_only_memory` (config) on the worker.
     workflow_kwargs = dict(base_workflow_kwargs)
-    workflow_kwargs["memory"] = train_memory
-    workflow_kwargs["evolution_controller"] = evolution_controller
     workflow_kwargs["is_train"] = True
 
     eval_workflow_kwargs = dict(base_workflow_kwargs)
     eval_workflow_kwargs["gconfig"] = config.gconfig.new(temperature=0.0, n_samples=1)
-    eval_workflow_kwargs["memory"] = eval_memory
-    eval_workflow_kwargs["evolution_controller"] = None
     eval_workflow_kwargs["is_train"] = False
 
-    with PPOTrainer(
+    # ---- Per-step rollout group sizing + advantage estimator --------------
+    # skill_env_workflow emits `max_steps` training rows per trajectory (one
+    # row per env step, see SkillEnvWorkflow._run -- faithful to SkillRL's
+    # per-step gather_rollout_data, NOT a concatenated trajectory). AReaL's
+    # reward normalization groups rows into contiguous `group_size` chunks for
+    # the GRPO advantage, so one group must span ALL per-step rows of the
+    # n_samples trajectories that share a prompt:
+    #     group_size = n_samples * max_steps
+    # (GroupedRolloutWorkflow's own group_size stays n_samples -- that is the
+    # *rollout* concurrency, a separate axis.)
+    max_steps = env_cfg.get("max_steps", 8)
+    group_size = config.gconfig.n_samples * max_steps
+
+    gigpo_cfg = dict(config.gigpo) if config.gigpo else {}
+    gigpo_enabled = bool(gigpo_cfg.get("enable", False))
+
+    if gigpo_enabled:
+        # GiGPO (A^E + ω·A^S, port of gigpo/core_gigpo.py). Install a
+        # SkillGigpoNormConfig on config.actor.reward_norm: a NormConfig
+        # *subclass* survives AReaL's fields()-based worker serialization (a
+        # plain extra attr would be dropped), carrying the GiGPO params to the
+        # remote actor. With mean/std_level=None the stock Normalization is a
+        # no-op, so super's reward_norm(adv_row) passes the pre-computed
+        # advantage through untouched. See SkillFSDPPPOActor.compute_advantages.
+        config.actor.reward_norm = SkillGigpoNormConfig(
+            mean_level=None,
+            std_level=None,
+            group_size=group_size,
+            enable=True,
+            step_advantage_w=gigpo_cfg.get("step_advantage_w", 1.0),
+            mode=gigpo_cfg.get("mode", "mean_std_norm"),
+            gamma=gigpo_cfg.get("gamma", 0.95),
+            max_steps=max_steps,
+        )
+        # GiGPO does its own two-level normalization; neutralize the stock
+        # reward shaping / advantage norm so the GAE transport (discount=
+        # gae_lambda=1, values=0) carries the pre-computed advantage unaltered.
+        config.actor.adv_norm = None
+        config.actor.kl_ctl = 0.0
+        config.actor.reward_scaling = 1.0
+        config.actor.reward_bias = 0.0
+        config.actor.reward_clip = 1000.0
+        trainer_cls = SkillPPOTrainer
+        rn = config.actor.reward_norm
+        print(
+            f"[skillrl] GiGPO enabled: group_size={group_size} "
+            f"(n_samples={config.gconfig.n_samples} * max_steps={max_steps}), "
+            f"mode={rn.mode}, gamma={rn.gamma}, "
+            f"step_advantage_w={rn.step_advantage_w}"
+        )
+    else:
+        # GRPO: with the yaml default group_size=n_samples, the framework would
+        # group `n_samples` *steps* instead of `n_samples` *trajectories*,
+        # making the advantage wrong -- so overwrite to the per-step product.
+        if config.actor.reward_norm is not None:
+            config.actor.reward_norm.group_size = group_size
+            print(
+                f"[skillrl] per-step rollout: reward_norm.group_size set to "
+                f"{group_size} (n_samples * max_steps)"
+            )
+        trainer_cls = PPOTrainer
+
+    with trainer_cls(
         config,
         train_dataset=train_dataset,
         valid_dataset=valid_dataset,
@@ -121,7 +205,6 @@ def main(args):
             workflow_kwargs=workflow_kwargs,
             eval_workflow=workflow_cls,
             eval_workflow_kwargs=eval_workflow_kwargs,
-            dynamic_filter_fn=dynamic_filter_fn,
         )
 
 

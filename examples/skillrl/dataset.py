@@ -101,37 +101,43 @@ def _synthetic_rl_dataset(
     return Dataset.from_list(rows)
 
 
-def _resolve_num_episodes(dataset_config: Any, split: str, default_train: int, default_val: int) -> int:
-    """num_episodes from config (int `path` or `num_episodes` field), else default."""
-    if dataset_config is None:
-        return default_train if split != "test" else default_val
-    n = getattr(dataset_config, "num_episodes", None)
-    if n is not None:
-        return int(n)
-    path = getattr(dataset_config, "path", None)
-    if path is not None:
-        try:
-            return int(path)
-        except (TypeError, ValueError):
-            pass
+def _resolve_num_episodes(
+    num_episodes: int | None,
+    split: str | None,
+    default_train: int,
+    default_val: int,
+) -> int:
+    """Episode count for the env-driven counter datasets.
+
+    ``num_episodes`` is passed explicitly from ``train.py``, which reads it off
+    the free-form ``env`` config (``env.train_num_episodes`` /
+    ``env.val_num_episodes``). It cannot live under ``train_dataset`` because
+    ``TrainDatasetConfig`` is a strictly typed dataclass that rejects unknown
+    keys (an ``omegaconf.errors.ConfigKeyError`` on merge). Falls back to
+    per-split defaults when unset.
+    """
+    if num_episodes is not None:
+        return int(num_episodes)
     return default_train if split != "test" else default_val
 
 
 def build_alfworld_rl_dataset(
     split: str | None = None,
     dataset_config: Any = None,
+    num_episodes: int | None = None,
     **kwargs,
 ):
     """ALFWorld RL dataset: a counter (env picks games on reset)."""
-    n = _resolve_num_episodes(dataset_config, split, default_train=1000, default_val=128)
+    n = _resolve_num_episodes(num_episodes, split, default_train=1000, default_val=128)
     return _synthetic_rl_dataset("alfworld", n)
 
 
 def build_webshop_rl_dataset(
     split: str | None = None,
     dataset_config: Any = None,
+    num_episodes: int | None = None,
     **kwargs,
 ):
     """WebShop RL dataset: a counter (env picks a goal session on reset)."""
-    n = _resolve_num_episodes(dataset_config, split, default_train=1000, default_val=128)
+    n = _resolve_num_episodes(num_episodes, split, default_train=1000, default_val=128)
     return _synthetic_rl_dataset("webshop", n)

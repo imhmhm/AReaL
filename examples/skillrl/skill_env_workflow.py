@@ -28,6 +28,7 @@ Env dispatch (template method):
 
 from __future__ import annotations
 
+import hashlib
 import logging
 from dataclasses import dataclass, field
 from typing import Any
@@ -40,7 +41,7 @@ from transformers import PreTrainedTokenizerFast
 from areal.api import InferenceEngine, ModelRequest, RolloutWorkflow
 from areal.api.cli_args import GenerationHyperparameters
 
-from .env_package.prompts.search import (
+from .prompts.search import (
     SEARCH_TEMPLATE,
     SEARCH_TEMPLATE_NO_HIS,
     SEARCH_TEMPLATE_WITH_MEMORY,
@@ -49,6 +50,23 @@ from .env_package.search import build_search_envs, search_projection
 from .memory import SkillsOnlyMemory
 
 logger = logging.getLogger("SkillEnvWorkflow")
+
+
+def _anchor_hash(text: str) -> int:
+    """Deterministic 61-bit non-negative hash of an anchor observation.
+
+    GiGPO Eq. 6 clusters step-rows by equal anchor (the raw env obs the action
+    was taken from). AReaL has no ``non_tensor_batch`` (``concat_padded_tensors``
+    only handles tensors), so we hash the obs text to an int64 that rides the
+    tensor path. 61-bit non-negative so it never collides with padding rows'
+    negative sentinels (see ``_padding_row``). blake2b -> int64 equality is
+    equivalent to the original's ``to_hashable`` string equality (collision
+    negligible). Similarity mode (text ``SequenceMatcher``) is Phase 3.
+    """
+    h = hashlib.blake2b(
+        text.encode("utf-8", errors="replace"), digest_size=8
+    ).digest()
+    return int.from_bytes(h, "big", signed=False) & ((1 << 61) - 1)
 
 
 @dataclass
@@ -299,11 +317,18 @@ class SkillEnvWorkflow(RolloutWorkflow):
                 task_description=task_description, top_k=top_k
             )
 
-        seq: list[int] = []
-        logprobs: list[float] = []
-        loss_mask: list[int] = []
-        versions: list[int] = []
+        # Per-step training rows (faithful to SkillRL's gather_rollout_data:
+        # each env step is an INDEPENDENT [prompt_i | resp_i] sample, NOT a
+        # concatenated trajectory). The prompt is re-rendered every step
+        # (task + skills + sliding-window history + obs + admissible_actions),
+        # so every row is self-contained and bounded (<< max_model_len) -- no
+        # 75k-token concatenation that would blow the context / FFD capacity.
+        step_rows: list[dict[str, list]] = []
         episode_reward = 0.0
+        # Per-trajectory nonce for unique padding-row anchor sentinels (GiGPO
+        # Eq. 6): padding rows must form size-1 step clusters (A^S=0), never
+        # clustering with real steps or each other across trajectories.
+        traj_nonce = uuid4().int & ((1 << 62) - 1)
         done = False
         won = False
 
@@ -352,28 +377,35 @@ class SkillEnvWorkflow(RolloutWorkflow):
             results, valids = self.projection_f([action_str])
             env_action = results[0] if results else ""
 
-            # Accumulate training tokens: append this turn's prompt (mask=0) +
-            # response (mask=1). Each turn re-renders a fresh prompt (history
-            # embedded as text) and re-tokenizes it, so resp.input_tokens is
-            # NOT a strict growing prefix of seq - the MultiTurnWorkflow
-            # raw-append invariant (input_ids = input_ids + output + next_prompt)
-            # does not hold. We therefore append the FULL prompt+response per
-            # turn (no reset, no prefix assumption), which keeps loss_mask
-            # aligned with seq by construction. Concatenating prompt_i (ends
-            # with the assistant header) + output_i + prompt_{i+1} (starts with
-            # a user header) yields a valid alternating conversation; prior
-            # outputs also recur as history text inside later prompts
-            # (redundant but mask=0, so not trained twice).
-            seq += input_ids + output_tokens
-            logprobs += [0.0] * len(input_ids) + output_logprobs
-            loss_mask += [0] * len(input_ids) + [1] * len(output_tokens)
-            versions += [-1] * len(input_ids) + list(output_versions)
+            # One per-step training row: [prompt_i (loss_mask=0) | resp_i
+            # (loss_mask=1)]. logprobs/versions for prompt tokens are unused
+            # (mask=0); only response tokens carry training signal. Each row
+            # is an independent sequence -- resp_i attends only to prompt_i,
+            # exactly like SkillRL's per-step generate_sequences.
+            anchor_hash = _anchor_hash(current_obs)
+            n_prompt = len(input_ids)
+            step_rows.append(
+                {
+                    "input_ids": list(input_ids) + list(output_tokens),
+                    "logprobs": [0.0] * n_prompt + list(output_logprobs),
+                    "loss_mask": [0] * n_prompt + [1] * len(output_tokens),
+                    "versions": [-1] * n_prompt + list(output_versions),
+                    # GiGPO Eq. 6: anchor = raw obs the action was taken from
+                    # (non-negative hash; padded below for tensor transport).
+                    "anchor_hash": anchor_hash,
+                    # GiGPO Eq. 5: per-step env reward r_k (filled after
+                    # env.step). 0.0 for invalid-action retries.
+                    "step_reward": 0.0,
+                }
+            )
 
             if not env_action:
                 # Invalid action - feed empty observation, let the model retry.
                 env_obs, reward, done, step_info = "", 0.0, False, {}
             else:
                 env_obs, reward, done, step_info = env.step(env_action)
+            # Record the per-step reward for this row (GiGPO Eq. 5 input).
+            step_rows[-1]["step_reward"] = float(reward)
 
             episode_reward = max(episode_reward, reward)
             won = won or bool(step_info.get("won", False))
@@ -389,6 +421,19 @@ class SkillEnvWorkflow(RolloutWorkflow):
 
             if done:
                 break
+
+        # Pad to exactly max_steps rows so every trajectory emits a uniform
+        # [max_steps, L] block. GroupedRolloutWorkflow then concats the
+        # n_samples trajectories of a prompt into [n_samples * max_steps, L],
+        # and reward_norm (group_size = n_samples * max_steps, set in train.py)
+        # treats that whole block as one GRPO group. Padding rows carry 1 valid
+        # token (avoid all-masked forward NaN), loss_mask=0 (no gradient), and
+        # the trajectory's reward (so they participate in the group mean/std
+        # correctly but contribute no loss / no advantage).
+        while len(step_rows) < self.max_steps:
+            step_rows.append(self._padding_row(traj_nonce, len(step_rows)))
+        if not step_rows:  # defensive: max_steps == 0
+            step_rows.append(self._padding_row(traj_nonce, 0))
 
         # success metric for skill evolution (SkillRL pillar C trigger).
         # reward shaping is 0/1 (search) or 0/10 (alfworld/webshop's 10*won),
@@ -412,16 +457,81 @@ class SkillEnvWorkflow(RolloutWorkflow):
 
         # NOTE: returned dict must contain ONLY tensors (concat_padded_tensors
         # calls torch.cat per key). Non-tensor success/prompt data is carried
-        # via the evolution_controller side-channel above.
-        res = {
-            "input_ids": torch.tensor(seq, dtype=torch.int32).unsqueeze(0),
-            "logprobs": torch.tensor(logprobs, dtype=torch.float32).unsqueeze(0),
-            "loss_mask": torch.tensor(loss_mask, dtype=torch.int32).unsqueeze(0),
-            "versions": torch.tensor(versions, dtype=torch.int32).unsqueeze(0),
-            "rewards": torch.tensor([episode_reward], dtype=torch.float32),  # 1-D scalar
-            "attention_mask": torch.ones(len(seq), dtype=torch.bool).unsqueeze(0),
+        # via the evolution_controller side-channel above. Tensors are
+        # [max_steps, L_max] (one row per step); rewards is 1-D [max_steps]
+        # (one outcome per step, all equal to the trajectory reward -- matches
+        # SkillRL tagging every per-step item with episode_rewards).
+        return self._stack_step_rows(step_rows, episode_reward)
+
+    def _padding_row(self, traj_nonce: int = 0, slot: int = 0) -> dict[str, list]:
+        """A minimal zero-loss row used to pad a trajectory to max_steps.
+
+        1 valid token (so the forward pass is not all-masked -> no NaN),
+        loss_mask=0 (no gradient / no advantage), reward set per-row by the
+        caller. Cheaper than re-emitting a real prompt: FFD counts
+        attention_mask.sum() (valid tokens), so this row packs as 1 token.
+
+        GiGPO: ``anchor_hash`` is a unique negative sentinel
+        (``-(traj_nonce + slot + 1)``) so the row forms a size-1 step cluster
+        -> ``A^S = 0``; ``step_reward = 0`` -> zero return-to-go. Real anchors
+        are non-negative, so padding never clusters with them.
+        """
+        pad_id = self.tokenizer.eos_token_id
+        if pad_id is None:
+            pad_id = self.tokenizer.pad_token_id
+        if pad_id is None:
+            pad_id = 0
+        return {
+            "input_ids": [pad_id],
+            "logprobs": [0.0],
+            "loss_mask": [0],
+            "versions": [-1],
+            "anchor_hash": -(traj_nonce + slot + 1),
+            "step_reward": 0.0,
         }
-        return res
+
+    def _stack_step_rows(
+        self, step_rows: list[dict[str, list]], episode_reward: float
+    ) -> dict[str, torch.Tensor]:
+        """Stack per-step rows into [max_steps, L_max] tensors.
+
+        concat_padded_tensors (run by GroupedRolloutWorkflow) pads dim=1 to the
+        max row length across trajectories and concats dim=0, so returning
+        [max_steps, L] per trajectory yields [n_samples * max_steps, L_max] per
+        GRPO group -- exactly the per-step sample batch SkillRL trains on.
+        """
+        keys = ("input_ids", "logprobs", "loss_mask", "versions")
+        max_len = max(len(r["input_ids"]) for r in step_rows)
+        n = len(step_rows)
+        out: dict[str, torch.Tensor] = {}
+        for key in keys:
+            dtype = torch.float32 if key == "logprobs" else torch.int32
+            tensor = torch.zeros((n, max_len), dtype=dtype)
+            for i, r in enumerate(step_rows):
+                lst = r[key]
+                if lst:
+                    tensor[i, : len(lst)] = torch.tensor(lst, dtype=dtype)
+            out[key] = tensor
+        attention_mask = torch.zeros((n, max_len), dtype=torch.bool)
+        for i, r in enumerate(step_rows):
+            length = len(r["input_ids"])
+            if length:
+                attention_mask[i, :length] = True
+        out["attention_mask"] = attention_mask
+        # 1-D rewards: one outcome per step, all equal to the trajectory reward
+        # (concat_padded_tensors leaves 1-D tensors unpadded and concats dim=0).
+        out["rewards"] = torch.full((n,), float(episode_reward), dtype=torch.float32)
+        # GiGPO per-step signals (1-D [max_steps]; concat_padded_tensors concats
+        # 1-D tensors unpadded on dim=0, just like `rewards`):
+        #   anchor_hash  -> Eq. 6 step-group clustering key (int64)
+        #   step_rewards -> Eq. 5 per-step env reward r_k (float32)
+        out["anchor_hash"] = torch.tensor(
+            [r["anchor_hash"] for r in step_rows], dtype=torch.long
+        )
+        out["step_rewards"] = torch.tensor(
+            [r["step_reward"] for r in step_rows], dtype=torch.float32
+        )
+        return out
 
 
 def retrieved_has_skills(retrieved_memories: dict | None) -> bool:
@@ -469,7 +579,7 @@ class AlfworldEnvWorkflow(SkillEnvWorkflow):
         return obs_text  # fallback: whole obs
 
     def _build_text_obs(self, ctx: TurnContext) -> str:
-        from .env_package.prompts.alfworld import (
+        from .prompts.alfworld import (
             ALFWORLD_TEMPLATE,
             ALFWORLD_TEMPLATE_NO_HIS,
             ALFWORLD_TEMPLATE_WITH_MEMORY,
@@ -555,7 +665,7 @@ class WebShopEnvWorkflow(SkillEnvWorkflow):
         return task_kwargs.get("question", obs_text)
 
     def _build_text_obs(self, ctx: TurnContext) -> str:
-        from .env_package.prompts.webshop import (
+        from .prompts.webshop import (
             WEBSHOP_TEMPLATE,
             WEBSHOP_TEMPLATE_NO_HIS,
             WEBSHOP_TEMPLATE_WITH_MEMORY,
