@@ -199,6 +199,9 @@ api_key.json
 *.pdf
 *.swp
 
+# local debug/launch scripts (SkillRL adaptation scratch)
+mtp/
+
 .vscode/
 wandb/
 outputs/
