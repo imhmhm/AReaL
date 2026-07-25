@@ -20,8 +20,11 @@ change, because AReaL carries no ``non_tensor_batch``):
   original clustered by ``anchor_obs`` string equality (``to_hashable``); we
   cluster by an int64 ``anchor_hash`` (blake2b of the obs text, 61-bit
   non-negative). int64 equality == string equality (collision negligible).
-  Similarity mode (text-only ``SequenceMatcher``) is deferred to Phase 3 -- it
-  cannot be expressed on the tensor-only path.
+  Similarity mode (text ``SequenceMatcher``) is supported via
+  :func:`cluster_by_similarity` -- the anchor text is recovered from the
+  rendered prompt at the actor (char-index ``[c0,c1]``), so no non-tensor
+  transport is needed. ``anchor_mode`` selects hash / text_exact /
+  text_similarity.
 
 Return shape: unlike the original (which returns a token-level
 ``[bs, resp_len]`` tensor), this returns a **per-row scalar** ``[N]`` advantage
@@ -179,8 +182,9 @@ def build_step_group(
     Returns a ``[N]`` int64 tensor of contiguous cluster ids (unique per
     (block, anchor)). Clustering is scoped to the block -- cross-prompt visits
     to the "same" anchor are never merged (matches the original's
-    ``for idx in unique_indices`` partition). Exact-match only (int64 equality);
-    similarity mode is Phase 3.
+    ``for idx in unique_indices`` partition). Exact-match (int64 equality); for
+    text-extraction and similarity clustering see
+    :func:`cluster_by_equality` / :func:`cluster_by_similarity`.
     """
     N = anchor_hash.shape[0]
     assert N % group_size == 0, f"N={N} not divisible by group_size={group_size}"
@@ -195,6 +199,119 @@ def build_step_group(
         _, inv = torch.unique(anchor_hash[lo:hi], return_inverse=True)
         ids[lo:hi] = offset + inv
         offset += int(inv.max().item()) + 1
+    return ids
+
+
+def cluster_by_equality(
+    anchor_texts: list[str | None],
+    group_size: int,
+) -> torch.Tensor:
+    """Cluster rows by equal anchor *text* within each prompt block (Eq. 6,
+    ``anchor_mode=text_exact``).
+
+    Text-extraction counterpart of :func:`build_step_group`: identical per-block
+    clustering semantics, keyed by the decoded anchor string instead of an
+    int64 hash. Semantically equivalent to ``build_step_group`` (string equality
+    == hash equality, collision aside) -- ``hash`` mode is the vectorized fast
+    path of this; ``text_exact`` is the universal default that also verifies the
+    decode round-trip.
+
+    Args:
+        anchor_texts: length-N list; the decoded anchor text per row, or
+            ``None`` for a padding row (-> unique size-1 cluster).
+        group_size: rows per contiguous prompt block.
+
+    Returns:
+        ``[N]`` int64 tensor of contiguous cluster ids (unique per (block,
+        text)); padding rows get unique ids.
+    """
+    N = len(anchor_texts)
+    assert N % group_size == 0, f"N={N} not divisible by group_size={group_size}"
+    ids = torch.empty(N, dtype=torch.long)
+    offset = 0
+    for b in range(N // group_size):
+        lo = b * group_size
+        hi = lo + group_size
+        seen: dict[str, int] = {}
+        for i in range(lo, hi):
+            t = anchor_texts[i]
+            if t is None:
+                ids[i] = offset  # padding: unique size-1 cluster
+                offset += 1
+            else:
+                if t not in seen:
+                    seen[t] = offset
+                    offset += 1
+                ids[i] = seen[t]
+    return ids
+
+
+def cluster_by_similarity(
+    anchor_texts: list[str | None],
+    similarity_thresh: float,
+    group_size: int,
+) -> torch.Tensor:
+    """Cluster rows by anchor-text *similarity* within each prompt block
+    (Eq. 6, ``anchor_mode=text_similarity``).
+
+    Faithful port of ``core_gigpo.build_step_group(enable_similarity=True)``:
+    greedy -- each row joins the first existing cluster whose representative is
+    similar (``SequenceMatcher.ratio() >= thresh``); otherwise it starts a new
+    cluster (and becomes its rep). A length-ratio pre-filter skips pairs whose
+    ratio upper bound is already below ``thresh`` (cheap pruning before the
+    O(n*m) SequenceMatcher). Clustering is scoped per block; padding
+    (``None``) -> unique size-1 cluster.
+
+    Args:
+        anchor_texts: length-N list of decoded anchor texts (``None``=padding).
+        similarity_thresh: ``SequenceMatcher.ratio()`` threshold, in (0, 1).
+        group_size: rows per contiguous prompt block.
+
+    Returns:
+        ``[N]`` int64 tensor of contiguous cluster ids.
+    """
+    from difflib import SequenceMatcher
+
+    assert 0.0 < similarity_thresh < 1.0, (
+        f"similarity_thresh must be in (0,1), got {similarity_thresh}"
+    )
+    N = len(anchor_texts)
+    assert N % group_size == 0, f"N={N} not divisible by group_size={group_size}"
+    ids = torch.empty(N, dtype=torch.long)
+    offset = 0
+    for b in range(N // group_size):
+        lo = b * group_size
+        hi = lo + group_size
+        reps: list[tuple[str, int]] = []  # (representative text, cluster id)
+        for i in range(lo, hi):
+            t = anchor_texts[i]
+            if t is None:
+                ids[i] = offset  # padding: unique size-1 cluster
+                offset += 1
+                continue
+            assigned = None
+            lt = len(t)
+            for rep_text, cid in reps:
+                lr = len(rep_text)
+                # SequenceMatcher.ratio() = 2*M/(lt+lr) with M <= min(lt,lr), so
+                # the max possible ratio (shorter fully substring of longer) is
+                # 2*min(lt,lr)/(lt+lr). If even that is below thresh the pair can
+                # never match -> safe to skip (provably partition-identical to the
+                # no-pre-filter original in core_gigpo). NB: min/max alone is NOT
+                # a safe bound -- it under-estimates max ratio and can drop real
+                # matches (e.g. len 8 vs 10 at thresh 0.85: ratio 0.889 but
+                # min/max = 0.8).
+                if lt + lr > 0 and 2 * min(lt, lr) / (lt + lr) < similarity_thresh:
+                    continue
+                if SequenceMatcher(None, t, rep_text).ratio() >= similarity_thresh:
+                    assigned = cid
+                    break
+            if assigned is None:
+                ids[i] = offset
+                reps.append((t, offset))
+                offset += 1
+            else:
+                ids[i] = assigned
     return ids
 
 
@@ -220,7 +337,7 @@ def step_advantage(
 def compute_gigpo_per_row_advantage(
     rewards: torch.Tensor,
     step_rewards: torch.Tensor,
-    anchor_hash: torch.Tensor,
+    step_group_id: torch.Tensor,
     group_size: int,
     max_steps: int,
     step_advantage_w: float = 1.0,
@@ -230,13 +347,18 @@ def compute_gigpo_per_row_advantage(
 ) -> torch.Tensor:
     """GiGPO per-row advantage ``A = A^E + ω · A^S`` (Eq. 8).
 
+    The step-group (Eq. 6) is computed by the caller -- ``SkillFSDPPPOActor.
+    compute_advantages`` selects the clustering by ``anchor_mode``:
+    :func:`build_step_group` (hash), :func:`cluster_by_equality`
+    (text_exact), or :func:`cluster_by_similarity` (text_similarity). This
+    function only consumes the resulting ``step_group_id``.
+
     Args:
         rewards: ``[N]`` episode outcome ``R(τ_i)`` per row (raw, pre-scaling;
             every step-row of a trajectory carries the same value).
         step_rewards: ``[N]`` per-step env reward ``r_k``.
-        anchor_hash: ``[N]`` int64 anchor id per row (non-negative for real
-            steps; padding rows use a unique negative sentinel so they form
-            size-1 clusters).
+        step_group_id: ``[N]`` int64 cluster id per row (precomputed by the
+            caller per Eq. 6; padding rows carry a unique id -> size-1 cluster).
         group_size: ``n_samples * max_steps`` (rows per contiguous prompt block).
         max_steps: env steps per trajectory.
         step_advantage_w: ``ω`` (default 1.0; all paper experiments use 1.0).
@@ -260,8 +382,8 @@ def compute_gigpo_per_row_advantage(
     step_returns = compute_step_returns(step_rewards, group_size, max_steps, gamma)
     # Eq. 3: episode advantage (group = prompt block).
     a_episode = episode_advantage(rewards, group_size, remove_std, epsilon)
-    # Eq. 6: anchor clustering within each block (computed once; reused for Eq.7).
-    step_group_id = build_step_group(anchor_hash, group_size)
+    # Eq. 6 (anchor clustering) is precomputed by the caller (hash /
+    # text_exact / text_similarity) and passed in as step_group_id.
     # Eq. 7: step advantage (group = anchor cluster within block).
     a_step = _group_norm(step_returns, step_group_id, remove_std, epsilon)
 

@@ -192,6 +192,7 @@ class SkillEnvWorkflow(RolloutWorkflow):
         seed: int = 0,
         is_train: bool = True,
         evolution_controller: Any = None,
+        anchor_mode: str = "text_exact",
     ):
         from areal.utils.hf_utils import load_hf_tokenizer
 
@@ -237,6 +238,11 @@ class SkillEnvWorkflow(RolloutWorkflow):
         # failed trajectories (per-step {action, observation}) into it; the
         # controller's should_accept_fn drives the actual evolution.
         self.evolution_controller = evolution_controller
+
+        # GiGPO Eq. 6 anchor sourcing+clustering mode (hash | text_exact |
+        # text_similarity | none). Decides which anchor field(s) each step-row
+        # emits. See github/doc/SkillRL_GiGPO_anchor从prompt界定方法.md.
+        self.anchor_mode = anchor_mode
 
     # ------------------------------------------------------------------ #
     # Env-specific hooks (override in subclasses)                         #
@@ -382,22 +388,21 @@ class SkillEnvWorkflow(RolloutWorkflow):
             # (mask=0); only response tokens carry training signal. Each row
             # is an independent sequence -- resp_i attends only to prompt_i,
             # exactly like SkillRL's per-step generate_sequences.
-            anchor_hash = _anchor_hash(current_obs)
             n_prompt = len(input_ids)
-            step_rows.append(
-                {
-                    "input_ids": list(input_ids) + list(output_tokens),
-                    "logprobs": [0.0] * n_prompt + list(output_logprobs),
-                    "loss_mask": [0] * n_prompt + [1] * len(output_tokens),
-                    "versions": [-1] * n_prompt + list(output_versions),
-                    # GiGPO Eq. 6: anchor = raw obs the action was taken from
-                    # (non-negative hash; padded below for tensor transport).
-                    "anchor_hash": anchor_hash,
-                    # GiGPO Eq. 5: per-step env reward r_k (filled after
-                    # env.step). 0.0 for invalid-action retries.
-                    "step_reward": 0.0,
-                }
-            )
+            row = {
+                "input_ids": list(input_ids) + list(output_tokens),
+                "logprobs": [0.0] * n_prompt + list(output_logprobs),
+                "loss_mask": [0] * n_prompt + [1] * len(output_tokens),
+                "versions": [-1] * n_prompt + list(output_versions),
+                # GiGPO Eq. 5: per-step env reward r_k (filled after env.step).
+                # 0.0 for invalid-action retries.
+                "step_reward": 0.0,
+            }
+            # GiGPO Eq. 6 anchor field (mode-dependent): hash -> anchor_hash;
+            # text_exact/text_similarity -> anchor_c0/anchor_c1 (char span of
+            # current_obs in the rendered prompt; decoded+sliced at the actor).
+            row.update(self._anchor_field(text_obs, current_obs, input_ids))
+            step_rows.append(row)
 
             if not env_action:
                 # Invalid action - feed empty observation, let the model retry.
@@ -463,6 +468,63 @@ class SkillEnvWorkflow(RolloutWorkflow):
         # SkillRL tagging every per-step item with episode_rewards).
         return self._stack_step_rows(step_rows, episode_reward)
 
+    def _anchor_field(
+        self, text_obs: str, current_obs: str, prompt_ids: list[int]
+    ) -> dict[str, int]:
+        """Build the per-row anchor field(s) for the active ``anchor_mode``.
+
+        - ``hash``: ``anchor_hash`` = blake2b(current_obs) -> int64 (exact-match,
+          vectorized, no decode).
+        - ``text_exact`` / ``text_similarity``: ``anchor_c0`` / ``anchor_c1``
+          = char span of current_obs in the rendered prompt (the actor decodes
+          the prompt and slices this span). Includes the round-trip hard assert.
+        - ``none``: no anchor field (GiGPO disabled / GRPO).
+        """
+        mode = self.anchor_mode
+        if mode == "none":
+            return {}
+        if mode == "hash":
+            return {"anchor_hash": _anchor_hash(current_obs)}
+        c0, c1 = self._anchor_span(text_obs, current_obs, prompt_ids)
+        return {"anchor_c0": c0, "anchor_c1": c1}
+
+    def _anchor_span(
+        self, text_obs: str, current_obs: str, prompt_ids: list[int]
+    ) -> tuple[int, int]:
+        """Char span ``[c0, c1]`` of ``current_obs`` in the rendered prompt.
+
+        Used by the text anchor modes. Returns ``(-1, -1)`` (-> size-1 cluster
+        at the actor) if ``current_obs`` is empty or not found in the rendered
+        prompt. Verifies the decode round-trip (``decode(prompt_ids) ==
+        rendered``) with a hard assert -- the actor slices ``[c0:c1]`` on the
+        decoded prompt, so any mismatch would misalign the span.
+        """
+        if not current_obs:
+            return -1, -1
+        rendered = self.tokenizer.apply_chat_template(
+            [{"role": "user", "content": text_obs}],
+            tokenize=False,
+            add_generation_prompt=True,
+        )
+        c0 = rendered.find(current_obs)
+        if c0 < 0:
+            # Invariant (current_obs ⊂ rendered) violated -- e.g. an env whose
+            # obs isn't injected verbatim. Degrade to size-1 cluster rather than
+            # crash the rollout.
+            logger.warning(
+                "anchor (current_obs) not found in rendered prompt; "
+                "using size-1 step cluster for this row."
+            )
+            return -1, -1
+        decoded = self.tokenizer.decode(prompt_ids, skip_special_tokens=False)
+        assert decoded == rendered, (
+            "decode(apply_chat_template(tokenize=True)) != "
+            "apply_chat_template(tokenize=False); char-index anchor span would "
+            "misalign at the actor. Check tokenizer config (e.g. a normalizer "
+            "that breaks round-trip fidelity)."
+        )
+        return c0, c0 + len(current_obs)
+
     def _padding_row(self, traj_nonce: int = 0, slot: int = 0) -> dict[str, list]:
         """A minimal zero-loss row used to pad a trajectory to max_steps.
 
@@ -471,24 +533,32 @@ class SkillEnvWorkflow(RolloutWorkflow):
         caller. Cheaper than re-emitting a real prompt: FFD counts
         attention_mask.sum() (valid tokens), so this row packs as 1 token.
 
-        GiGPO: ``anchor_hash`` is a unique negative sentinel
-        (``-(traj_nonce + slot + 1)``) so the row forms a size-1 step cluster
-        -> ``A^S = 0``; ``step_reward = 0`` -> zero return-to-go. Real anchors
-        are non-negative, so padding never clusters with them.
+        GiGPO anchor sentinel (mode-dependent, -> size-1 step cluster so
+        ``A^S = 0``; ``step_reward = 0`` -> zero return-to-go):
+        - ``hash``: ``anchor_hash = -(traj_nonce + slot + 1)`` (unique negative;
+          real anchors are non-negative, so padding never clusters with them).
+        - ``text_*``: ``anchor_c0 = anchor_c1 = -1`` (the actor decodes None
+          for ``c0<0`` -> size-1 cluster).
+        - ``none``: no anchor field.
         """
         pad_id = self.tokenizer.eos_token_id
         if pad_id is None:
             pad_id = self.tokenizer.pad_token_id
         if pad_id is None:
             pad_id = 0
-        return {
+        row: dict[str, list] = {
             "input_ids": [pad_id],
             "logprobs": [0.0],
             "loss_mask": [0],
             "versions": [-1],
-            "anchor_hash": -(traj_nonce + slot + 1),
             "step_reward": 0.0,
         }
+        if self.anchor_mode == "hash":
+            row["anchor_hash"] = -(traj_nonce + slot + 1)
+        elif self.anchor_mode in ("text_exact", "text_similarity"):
+            row["anchor_c0"] = -1
+            row["anchor_c1"] = -1
+        return row
 
     def _stack_step_rows(
         self, step_rows: list[dict[str, list]], episode_reward: float
@@ -523,11 +593,23 @@ class SkillEnvWorkflow(RolloutWorkflow):
         out["rewards"] = torch.full((n,), float(episode_reward), dtype=torch.float32)
         # GiGPO per-step signals (1-D [max_steps]; concat_padded_tensors concats
         # 1-D tensors unpadded on dim=0, just like `rewards`):
-        #   anchor_hash  -> Eq. 6 step-group clustering key (int64)
+        #   anchor_hash / anchor_c0 / anchor_c1 -> Eq. 6 step-group key(s)
         #   step_rewards -> Eq. 5 per-step env reward r_k (float32)
-        out["anchor_hash"] = torch.tensor(
-            [r["anchor_hash"] for r in step_rows], dtype=torch.long
-        )
+        # Which anchor key(s) are emitted depends on self.anchor_mode (hash ->
+        # anchor_hash; text_exact/text_similarity -> anchor_c0/anchor_c1; none
+        # -> none). Rows are built mode-aware (_anchor_field / _padding_row), so
+        # the keys present match the mode below.
+        if self.anchor_mode == "hash":
+            out["anchor_hash"] = torch.tensor(
+                [r["anchor_hash"] for r in step_rows], dtype=torch.long
+            )
+        elif self.anchor_mode in ("text_exact", "text_similarity"):
+            out["anchor_c0"] = torch.tensor(
+                [r["anchor_c0"] for r in step_rows], dtype=torch.long
+            )
+            out["anchor_c1"] = torch.tensor(
+                [r["anchor_c1"] for r in step_rows], dtype=torch.long
+            )
         out["step_rewards"] = torch.tensor(
             [r["step_reward"] for r in step_rows], dtype=torch.float32
         )

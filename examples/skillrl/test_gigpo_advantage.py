@@ -20,6 +20,8 @@ import torch
 
 from examples.skillrl.gigpo_advantage import (
     build_step_group,
+    cluster_by_equality,
+    cluster_by_similarity,
     compute_gigpo_per_row_advantage,
     compute_step_returns,
     episode_advantage,
@@ -106,8 +108,9 @@ def test_gigpo_combination_eq8():
     omega = 1.0
     gamma = 0.95
 
+    step_group_id = build_step_group(anchor_hash, GROUP_SIZE)
     adv = compute_gigpo_per_row_advantage(
-        rewards, step_rewards, anchor_hash, GROUP_SIZE, MAX_STEPS,
+        rewards, step_rewards, step_group_id, GROUP_SIZE, MAX_STEPS,
         step_advantage_w=omega, mode="mean_std_norm", gamma=gamma,
     )
     step_returns = compute_step_returns(step_rewards, GROUP_SIZE, MAX_STEPS, gamma)
@@ -122,8 +125,9 @@ def test_degradation_to_grpo():
     rewards = torch.tensor([10.0, 10.0, 10.0, 0.0, 0.0, 0.0])
     step_rewards = torch.tensor([0.0, 0.0, 10.0, 0.0, 0.0, 0.0])
     anchor_hash = torch.tensor([1, 2, 3, 4, 5, 6], dtype=torch.long)  # all unique
+    step_group_id = build_step_group(anchor_hash, GROUP_SIZE)
     adv = compute_gigpo_per_row_advantage(
-        rewards, step_rewards, anchor_hash, GROUP_SIZE, MAX_STEPS,
+        rewards, step_rewards, step_group_id, GROUP_SIZE, MAX_STEPS,
         step_advantage_w=1.0, mode="mean_std_norm", gamma=0.95,
     )
     a_e = episode_advantage(rewards, GROUP_SIZE, remove_std=False)
@@ -185,8 +189,9 @@ def test_multi_block_independent_grouping():
     N = 12
     assert N % GROUP_SIZE == 0
 
+    step_group_id = build_step_group(anchor_hash, GROUP_SIZE)
     adv = compute_gigpo_per_row_advantage(
-        rewards, step_rewards, anchor_hash, GROUP_SIZE, MAX_STEPS,
+        rewards, step_rewards, step_group_id, GROUP_SIZE, MAX_STEPS,
         step_advantage_w=1.0, mode="mean_std_norm", gamma=0.95,
     )
     # Per-block A^E: block0 winner=traj0, block1 winner=traj1. Both blocks have
@@ -210,13 +215,113 @@ def test_unknown_mode_raises():
     anchor_hash = torch.arange(6, dtype=torch.long)
     with pytest.raises(ValueError):
         compute_gigpo_per_row_advantage(
-            rewards, step_rewards, anchor_hash, GROUP_SIZE, MAX_STEPS, mode="bogus"
+            rewards, step_rewards, build_step_group(anchor_hash, GROUP_SIZE),
+            GROUP_SIZE, MAX_STEPS, mode="bogus"
         )
 
 
 def test_n_not_divisible_raises():
     with pytest.raises(AssertionError):
         compute_step_returns(torch.zeros(7), GROUP_SIZE, MAX_STEPS, 0.95)
+
+
+def test_cluster_by_equality():
+    """text_exact: equal anchor texts share a cluster; padding (None) is unique."""
+    # 1 block of 6: rows 0,3 share "A"; 1,4 share "B"; 2 is "C"; 5 is padding.
+    texts = ["A", "B", "C", "A", "B", None]
+    ids = cluster_by_equality(texts, GROUP_SIZE)
+    assert ids[0].item() == ids[3].item()   # same text "A"
+    assert ids[1].item() == ids[4].item()   # same text "B"
+    # A, B, C, padding are 4 distinct clusters
+    assert len({ids[i].item() for i in (0, 1, 2, 5)}) == 4
+    assert ids[2].item() != ids[5].item()
+
+
+def test_cluster_by_similarity():
+    """text_similarity: greedy clustering by SequenceMatcher.ratio()>=thresh."""
+    t0 = "hello world"
+    t1 = "hello world!"   # ratio(t0,t1) = 2*11/23 ~= 0.957
+    # 1 block of 6: [t0, t1, t0, padding, padding, padding]
+    texts = [t0, t1, t0, None, None, None]
+    # thresh 0.9: t1 joins t0's cluster (0.957>=0.9); the two t0's cluster together.
+    ids = cluster_by_similarity(texts, 0.9, GROUP_SIZE)
+    assert ids[0].item() == ids[1].item() == ids[2].item()
+    # 3 paddings -> 3 distinct size-1 clusters
+    assert len({ids[i].item() for i in (3, 4, 5)}) == 3
+    # thresh 0.99: t1 (0.957) no longer joins t0 -> separate cluster.
+    ids_hi = cluster_by_similarity(texts, 0.99, GROUP_SIZE)
+    assert ids_hi[0].item() != ids_hi[1].item()
+    assert ids_hi[0].item() == ids_hi[2].item()  # identical t0 still clusters
+
+
+def test_cluster_by_similarity_no_filter_partition():
+    """Pre-filter must be partition-identical to the no-filter original.
+
+    Stress case: 'abcdefgh' (8) vs 'abcdefghij' (10) -- the shorter is a full
+    prefix of the longer, so ratio = 2*8/18 = 0.889. At thresh 0.85 they MUST
+    cluster. A naive min/max pre-filter (0.8 < 0.85) would wrongly skip them;
+    the correct bound (2*min/(la+lb) = 0.889 >= 0.85) does not.
+    """
+    from difflib import SequenceMatcher
+
+    texts = ["abcdefgh", "abcdefghij", "abcdefgh", "xyz", "abcdefghij", None]
+    thresh = 0.85
+    ids = cluster_by_similarity(texts, thresh, GROUP_SIZE)
+    # Brute-force reference: greedy first-match, rep=first, NO pre-filter
+    # (== core_gigpo.build_step_group(enable_similarity=True)).
+    ref = [None] * len(texts)
+    offset = 0
+    reps = []
+    for i, t in enumerate(texts):
+        if t is None:
+            ref[i] = offset
+            offset += 1
+            continue
+        assigned = None
+        for rep_text, cid in reps:
+            if SequenceMatcher(None, t, rep_text).ratio() >= thresh:
+                assigned = cid
+                break
+        if assigned is None:
+            ref[i] = offset
+            reps.append((t, offset))
+            offset += 1
+        else:
+            ref[i] = assigned
+    for i in range(len(texts)):
+        for j in range(len(texts)):
+            assert (ids[i].item() == ids[j].item()) == (ref[i] == ref[j]), (
+                f"partition mismatch ({i},{j}): filter={ids.tolist()} ref={ref}"
+            )
+    # Specifically: the 8-char and 10-char strings cluster (ratio 0.889 >= 0.85).
+    assert ids[0].item() == ids[1].item() == ids[2].item() == ids[4].item()
+
+
+def test_text_exact_equivalent_to_hash():
+    """text_exact and hash produce the same clustering partition.
+
+    For distinct anchors, string-equality clustering (text_exact) and
+    int64-equality clustering (hash) must partition rows identically -- hash
+    is the vectorized fast path of text_exact, not different semantics.
+    """
+    import hashlib
+
+    def _h(s: str) -> int:
+        return int.from_bytes(
+            hashlib.blake2b(s.encode("utf-8"), digest_size=8).digest(),
+            "big", signed=False,
+        ) & ((1 << 61) - 1)
+
+    texts = ["alpha", "beta", "gamma", "alpha", "beta", "gamma"]
+    ids_text = cluster_by_equality(texts, GROUP_SIZE)
+    anchor_hash = torch.tensor([_h(s) for s in texts], dtype=torch.long)
+    ids_hash = build_step_group(anchor_hash, GROUP_SIZE)
+    # The partition (which row pairs share a cluster) must be identical.
+    for i in range(len(texts)):
+        for j in range(len(texts)):
+            assert (ids_text[i].item() == ids_text[j].item()) == (
+                ids_hash[i].item() == ids_hash[j].item()
+            ), f"partition mismatch at ({i},{j})"
 
 
 if __name__ == "__main__":

@@ -58,8 +58,8 @@ gigpo:
   step_advantage_w: 1.0           # ω in Eq. 8 (paper uses 1.0, no tuning)
   mode: mean_norm                 # faithful to run_webshop.sh (webshop uses mean_norm)
   gamma: 0.95                     # Eq. 5 discount (webshop shipped: 0.95)
-  enable_similarity: false        # exact-match anchor grouping only (webshop)
-  similarity_thresh: 0.95         # unused when enable_similarity=false (Phase 3: search)
+  anchor_mode: hash               # exact-match: blake2b(current_obs)->int64 (vectorized, no decode)
+  similarity_thresh: 0.95         # unused when anchor_mode=hash (only for text_similarity)
 
 cluster:
   n_nodes: 1

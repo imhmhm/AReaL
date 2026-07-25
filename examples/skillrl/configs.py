@@ -46,6 +46,25 @@ class SkillGigpoNormConfig(NormConfig):
     max_steps: int = field(
         default=0, metadata={"help": "env max_steps (trajectory length within a block)."}
     )
+    anchor_mode: str = field(
+        default="text_exact",
+        metadata={
+            "help": "How the Eq.6 step-group anchor is sourced + clustered. "
+            "'text_exact' (default): extract anchor text from the rendered "
+            "prompt (char-index [c0,c1]) and cluster by string equality -- "
+            "universal, works for any env. 'text_similarity': same text "
+            "extraction, cluster by SequenceMatcher.ratio()>=thresh (search). "
+            "'hash': blake2b(current_obs)->int64 + equality (vectorized, no "
+            "decode) -- exact-match optimization for alfworld/webshop. "
+            "text_exact and hash are semantically equivalent (hash is the "
+            "fast path). See github/doc/SkillRL_GiGPO_anchor从prompt界定方法.md.",
+            "choices": ["text_exact", "text_similarity", "hash"],
+        },
+    )
+    similarity_thresh: float = field(
+        default=0.95,
+        metadata={"help": "SequenceMatcher.ratio() threshold for anchor_mode=text_similarity."},
+    )
 
 
 @dataclass
@@ -79,7 +98,7 @@ class SkillRLConfig(GRPOConfig):
         default_factory=dict,
         metadata={
             "help": "GiGPO config: enable, step_advantage_w, mode "
-            "(mean_std_norm|mean_norm), gamma, enable_similarity (Phase 3), "
-            "similarity_thresh."
+            "(mean_std_norm|mean_norm), gamma, anchor_mode "
+            "(text_exact|text_similarity|hash), similarity_thresh."
         },
     )

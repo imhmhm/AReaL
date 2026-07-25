@@ -44,7 +44,12 @@ import torch
 from areal.engine.fsdp_engine import FSDPPPOActor
 
 from .configs import SkillGigpoNormConfig
-from .gigpo_advantage import compute_gigpo_per_row_advantage
+from .gigpo_advantage import (
+    build_step_group,
+    cluster_by_equality,
+    cluster_by_similarity,
+    compute_gigpo_per_row_advantage,
+)
 
 
 class SkillFSDPPPOActor(FSDPPPOActor):
@@ -64,21 +69,51 @@ class SkillFSDPPPOActor(FSDPPPOActor):
             # GRPO path (stock AReaL): unchanged.
             return super().compute_advantages(data)
 
-        for key in ("step_rewards", "anchor_hash"):
-            if key not in data:
+        if "step_rewards" not in data:
+            raise KeyError(
+                "GiGPO is enabled but the rollout batch is missing "
+                "'step_rewards'. SkillEnvWorkflow emits step_rewards per "
+                "step-row; ensure the active workflow is SkillEnvWorkflow "
+                "(or a subclass), not a stock one."
+            )
+
+        # Eq. 6 (step group): cluster by anchor, dispatched by anchor_mode.
+        #   hash            -> int64 equality (vectorized, no decode)
+        #   text_exact      -> decode anchor text, string equality
+        #   text_similarity -> decode anchor text, SequenceMatcher>=thresh
+        anchor_mode = rn_cfg.anchor_mode
+        group_size = rn_cfg.group_size
+        if anchor_mode == "hash":
+            if "anchor_hash" not in data:
                 raise KeyError(
-                    f"GiGPO is enabled but the rollout batch is missing "
-                    f"{key!r}. SkillEnvWorkflow emits step_rewards / "
-                    f"anchor_hash per step-row; ensure the active workflow is "
-                    f"SkillEnvWorkflow (or a subclass), not a stock one."
+                    "anchor_mode=hash but the rollout batch is missing "
+                    "'anchor_hash'. SkillEnvWorkflow emits anchor_hash per "
+                    "step-row when anchor_mode=hash."
+                )
+            step_group_id = build_step_group(data["anchor_hash"], group_size)
+        else:  # text_exact | text_similarity
+            for key in ("anchor_c0", "anchor_c1"):
+                if key not in data:
+                    raise KeyError(
+                        f"anchor_mode={anchor_mode!r} but the rollout batch is "
+                        f"missing {key!r}. SkillEnvWorkflow emits anchor_c0 / "
+                        f"anchor_c1 per step-row when anchor_mode is a text "
+                        f"mode."
+                    )
+            anchor_texts = self._decode_anchor_texts(data)
+            if anchor_mode == "text_exact":
+                step_group_id = cluster_by_equality(anchor_texts, group_size)
+            else:  # text_similarity
+                step_group_id = cluster_by_similarity(
+                    anchor_texts, rn_cfg.similarity_thresh, group_size
                 )
 
-        # GiGPO: per-row advantage over the full batch.
+        # GiGPO: per-row advantage over the full batch (Eq. 8 = A^E + ω·A^S).
         adv_row = compute_gigpo_per_row_advantage(
             rewards=data["rewards"],
             step_rewards=data["step_rewards"],
-            anchor_hash=data["anchor_hash"],
-            group_size=rn_cfg.group_size,
+            step_group_id=step_group_id,
+            group_size=group_size,
             max_steps=rn_cfg.max_steps,
             step_advantage_w=rn_cfg.step_advantage_w,
             mode=rn_cfg.mode,
@@ -99,3 +134,38 @@ class SkillFSDPPPOActor(FSDPPPOActor):
         # correct/incorrect-seq stats (expects raw 0/10, not the advantage).
         data["rewards"] = original_rewards
         return result
+
+    def _decode_anchor_texts(self, data: dict[str, Any]) -> list[str | None]:
+        """Recover each row's anchor text from ``input_ids`` + char span [c0,c1].
+
+        text_exact / text_similarity path. The prompt portion (``loss_mask==0``
+        within ``attention_mask``) decodes to the rendered prompt string;
+        slicing ``[c0:c1]`` yields the bare anchor (``current_obs``) -- see
+        ``SkillRL_GiGPO_anchor从prompt界定方法.md`` §3. Padding rows (``c0<0``)
+        -> ``None`` (size-1 cluster).
+
+        ``skip_special_tokens=False`` is REQUIRED: the decoded string must
+        align 1:1 with the ``rendered`` the spans were computed on, so special
+        tokens like ``<|im_start|>`` must be preserved (stripping them would
+        shift every c0/c1).
+        """
+        input_ids = data["input_ids"]
+        attn = data["attention_mask"].bool()
+        loss_mask = data["loss_mask"]
+        c0s = data["anchor_c0"]
+        c1s = data["anchor_c1"]
+        texts: list[str | None] = []
+        for i in range(input_ids.shape[0]):
+            c0 = int(c0s[i])
+            if c0 < 0:
+                texts.append(None)
+                continue
+            c1 = int(c1s[i])
+            # Row layout is left-aligned [prompt|response|pad]; prompt tokens =
+            # valid (attention) AND prompt (loss_mask==0).
+            prompt_len = int((attn[i] & (loss_mask[i] == 0)).sum().item())
+            decoded = self.tokenizer.decode(
+                input_ids[i, :prompt_len], skip_special_tokens=False
+            )
+            texts.append(decoded[c0:c1])
+        return texts

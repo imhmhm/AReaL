@@ -1,9 +1,14 @@
-# SkillRL on AReaL - ALFWorld task (template retrieval mode, GiGPO, NPU/vLLM)
+# SkillRL on AReaL - Search task (template retrieval mode, GiGPO, NPU/vLLM)
 #
-# GiGPO (Group-in-Group) variant of config_alfworld.yaml. Differences vs GRPO:
+# GiGPO (Group-in-Group) variant of config_search.yaml. Differences vs GRPO:
 #   - gigpo.enable: true               -> train.py selects SkillPPOTrainer +
 #     SkillFSDPPPOActor (GiGPO advantage branch) and installs a
 #     SkillGigpoNormConfig on actor.reward_norm (param carrier; no-op norm).
+#   - gigpo.anchor_mode: text_similarity -> search states rarely repeat
+#     verbatim, so the Eq.6 step-group anchor is clustered by SequenceMatcher
+#     similarity (not exact hash). The anchor text is recovered from the
+#     rendered prompt at the actor via char-index [c0,c1] -- no non-tensor
+#     transport. See github/doc/SkillRL_GiGPO_anchor从prompt界定方法.md.
 #   - actor.reward_norm: null          -> GiGPO does its own two-level norm.
 #   - actor.adv_norm: null             -> no batch advantage norm (GiGPO is
 #     outcome-based; A^E+ω·A^S is already normalized).
@@ -11,10 +16,11 @@
 #     per-row advantage (train.py enforces this regardless).
 #   - actor.reward_clip: 1000.0        -> default 20 would truncate GiGPO
 #     advantages.
-#   - gigpo.gamma: 0.95, mode: mean_std_norm  -> faithful to run_alfworld.sh.
-# See github/doc/SkillRL_GiGPO_适配AReaL方案.md.
+#   - skills_only_memory.enable_dynamic_update: false -> pillar C (skill
+#     evolution) is not yet ported to AReaL (train.py fail-fasts); GiGPO here
+#     is advantage-only. (config_search.yaml keeps it true for the GRPO path.)
 #
-experiment_name: skillrl-alfworld-gigpo
+experiment_name: skillrl-search-gigpo
 trial_name: trial0
 
 seed: 1
@@ -24,33 +30,33 @@ tokenizer_path: ${actor.path}
 
 # ---- SkillRL task config (SkillRLConfig extra fields) ----
 env:
-  env_name: alfworld              # dispatch key in train.py
-  max_steps: 50
-  history_length: 2               # last N (obs, action) pairs rendered as action_history
-  train_num_episodes: 1000        # counter-dataset rows per train epoch (env picks games on reset)
-  val_num_episodes: 128           # counter-dataset rows per eval
-  alfworld:
-    eval_dataset: eval_in_distribution
+  env_name: search                # dispatch key in train.py
+  max_steps: 8
+  search:
+    search_url: http://127.0.0.1:8000/retrieve   # SearchEnv retrieval backend
+    topk: 3
+    timeout: 30
+    log_requests: true
 
 skills_only_memory:
-  skills_json_path: examples/skillrl/memory_data/alfworld/claude_style_skills.json
+  skills_json_path: examples/skillrl/memory_data/search/claude_style_skills.json
   retrieval_mode: template        # NPU-first: template (zero GPU). embedding mode later.
   top_k: 6
   task_specific_top_k: 4
-  enable_dynamic_update: false     # pillar C: recursive skill evolution
+  enable_dynamic_update: false    # pillar C unsupported on AReaL (train.py fail-fasts); GiGPO is advantage-only
   update_threshold: 0.4
   max_new_skills: 3
   skill_update_freq: 16           # evolve every N trajectories (≈ 1 train step @ batch 16)
-  embedding_device: cpu
+  embedding_device: cpu            # only used when retrieval_mode=embedding
 
 # ---- GiGPO advantage config (read by train.py) ----
 gigpo:
   enable: true
   step_advantage_w: 1.0           # ω in Eq. 8 (paper uses 1.0, no tuning)
-  mode: mean_std_norm             # faithful to run_alfworld.sh (shipped script)
-  gamma: 0.95                     # Eq. 5 discount (alfworld shipped: 0.95)
-  anchor_mode: hash               # exact-match: blake2b(current_obs)->int64 (vectorized, no decode)
-  similarity_thresh: 0.95         # unused when anchor_mode=hash (only for text_similarity)
+  mode: mean_std_norm             # GiGPO two-level norm (mean+std)
+  gamma: 0.95                     # Eq. 5 discount
+  anchor_mode: text_similarity    # search: cluster anchors by SequenceMatcher (exact hash would rarely match)
+  similarity_thresh: 0.95         # SequenceMatcher.ratio() threshold for anchor clustering
 
 cluster:
   n_nodes: 1
@@ -60,6 +66,7 @@ cluster:
     type: nfs
     nfs_record_root: /tmp/areal/name_resolve
 
+# vLLM is NPU-adapted in this environment (no need for sglang).
 allocation_mode: vllm:d4p1t1+d4p1t1
 
 scheduler:
@@ -79,7 +86,7 @@ rollout:
   dump_to_file: false
 
 gconfig:
-  n_samples: 8                    # GRPO/GiGPO group size (replaces SkillRL's env.rollout.n)
+  n_samples: 8                  # GRPO/GiGPO group size (replaces SkillRL's env.rollout.n)
   min_new_tokens: 0
   max_new_tokens: 512
   greedy: false
@@ -88,7 +95,7 @@ gconfig:
 actor:
   experiment_name: ${experiment_name}
   trial_name: ${trial_name}
-  path: Qwen/Qwen2.5-1.5B-Instruct
+  path: Qwen/Qwen2.5-7B-Instruct
   init_from_scratch: false
   disable_dropout: true
   gradient_checkpointing: true
@@ -126,18 +133,7 @@ actor:
       gpu: 1
       mem: 32
       cmd: python3 -m areal.infra.rpc.rpc_server
-      env_vars:
-        VLLM_USE_V1: "1"
-        VLLM_ALLOW_LONG_MAX_MODEL_LEN: "1"
-        TASK_QUEUE_ENABLE: "2"
-        HCCL_EXEC_TIMEOUT: "14400"
-        HCCL_OP_EXPANSION_MODE: "HOST"
-        ACL_DEVICE_SYNC_TIMEOUT: "14400"
-        HCCL_EVENT_TIMEOUT: "14500"
-        HCCL_ASYNC_ERROR_HANDLING: "0"
-        ACL_STREAM_TIMEOUT: "14500000"
-        HCCL_CONNECT_TIMEOUT: "7200"
-        PYTORCH_NPU_ALLOC_CONF: "expandable_segments:True"
+      env_vars: {}
 
 ref:
   experiment_name: ${experiment_name}
@@ -156,6 +152,7 @@ ref:
     target: actor
   scheduling_spec: ${actor.scheduling_spec}
 
+# vLLM (NPU-adapted)
 vllm:
   model: ${actor.path}
   seed: ${seed}
@@ -173,23 +170,22 @@ sglang:
   context_length: 32768
   mem_fraction_static: 0.8
 
-# ALFWorld is env-driven: the env picks its own game on reset, so the dataset
-# is a counter (one row per episode). The episode count is set on `env`
-# (train_num_episodes / val_num_episodes); no external QA dataset is needed.
+# datasets - point to a Search-R1 style QA dataset with question/answer fields.
+# Replace path with your own local/HF QA dataset.
 train_dataset:
-  path: alfworld                 # required by TrainDatasetConfig schema; unused (counter dataset, pre-built in train.py)
   batch_size: 16
   shuffle: true
   pin_memory: true
   num_workers: 4
+  path: PeterJinGo/Search-R1-zhihu-clean
   type: rl
-  max_length: 32768  # alfworld: up to 50 steps, each turn prompt+response ~500 tokens
+  max_length: 8192  # search: up to 8 steps, prompt grows with full history
 
 valid_dataset:
-  path: alfworld                 # required by schema; unused (counter dataset)
   batch_size: 16
   pin_memory: true
   num_workers: 4
+  path: PeterJinGo/Search-R1-zhihu-clean
   type: rl
 
 saver:

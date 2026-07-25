@@ -65,6 +65,10 @@ def main(args):
 
     skills_cfg = dict(config.skills_only_memory)
     env_cfg = dict(config.env)
+    # GiGPO config (read here so anchor_mode can flow into workflow_kwargs
+    # below; also reused by the GiGPO advantage block later).
+    gigpo_cfg = dict(config.gigpo) if config.gigpo else {}
+    gigpo_enabled = bool(gigpo_cfg.get("enable", False))
     env_name = env_cfg.get("env_name", "search")
     if env_name not in ENV_REGISTRY:
         raise ValueError(
@@ -121,6 +125,10 @@ def main(args):
         env_config=env_cfg,
         max_steps=env_cfg.get("max_steps", 8),
         skills_only_memory=skills_cfg if skills_cfg else None,
+        # GiGPO Eq.6 anchor mode for the workflow: 'none' when GiGPO is off
+        # (GRPO) so the workflow skips anchor computation entirely; otherwise
+        # the configured mode (hash | text_exact | text_similarity).
+        anchor_mode=(gigpo_cfg.get("anchor_mode", "text_exact") if gigpo_enabled else "none"),
     )
 
     # NOTE: do NOT add `memory` or `evolution_controller` here -- they are live
@@ -146,9 +154,6 @@ def main(args):
     max_steps = env_cfg.get("max_steps", 8)
     group_size = config.gconfig.n_samples * max_steps
 
-    gigpo_cfg = dict(config.gigpo) if config.gigpo else {}
-    gigpo_enabled = bool(gigpo_cfg.get("enable", False))
-
     if gigpo_enabled:
         # GiGPO (A^E + ω·A^S, port of gigpo/core_gigpo.py). Install a
         # SkillGigpoNormConfig on config.actor.reward_norm: a NormConfig
@@ -166,6 +171,8 @@ def main(args):
             mode=gigpo_cfg.get("mode", "mean_std_norm"),
             gamma=gigpo_cfg.get("gamma", 0.95),
             max_steps=max_steps,
+            anchor_mode=gigpo_cfg.get("anchor_mode", "text_exact"),
+            similarity_thresh=gigpo_cfg.get("similarity_thresh", 0.95),
         )
         # GiGPO does its own two-level normalization; neutralize the stock
         # reward shaping / advantage norm so the GAE transport (discount=
@@ -181,7 +188,7 @@ def main(args):
             f"[skillrl] GiGPO enabled: group_size={group_size} "
             f"(n_samples={config.gconfig.n_samples} * max_steps={max_steps}), "
             f"mode={rn.mode}, gamma={rn.gamma}, "
-            f"step_advantage_w={rn.step_advantage_w}"
+            f"step_advantage_w={rn.step_advantage_w}, anchor_mode={rn.anchor_mode}"
         )
     else:
         # GRPO: with the yaml default group_size=n_samples, the framework would
