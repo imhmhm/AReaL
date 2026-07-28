@@ -38,16 +38,18 @@ import torch
 from omegaconf import OmegaConf
 from transformers import PreTrainedTokenizerFast
 
+from areal import workflow_context
 from areal.api import InferenceEngine, ModelRequest, RolloutWorkflow
 from areal.api.cli_args import GenerationHyperparameters
+from areal.utils import stats_tracker
 
+from .env_package.search import build_search_envs, search_projection
+from .memory import SkillsOnlyMemory
 from .prompts.search import (
     SEARCH_TEMPLATE,
     SEARCH_TEMPLATE_NO_HIS,
     SEARCH_TEMPLATE_WITH_MEMORY,
 )
-from .env_package.search import build_search_envs, search_projection
-from .memory import SkillsOnlyMemory
 
 logger = logging.getLogger("SkillEnvWorkflow")
 
@@ -63,9 +65,7 @@ def _anchor_hash(text: str) -> int:
     equivalent to the original's ``to_hashable`` string equality (collision
     negligible). Similarity mode (text ``SequenceMatcher``) is Phase 3.
     """
-    h = hashlib.blake2b(
-        text.encode("utf-8", errors="replace"), digest_size=8
-    ).digest()
+    h = hashlib.blake2b(text.encode("utf-8", errors="replace"), digest_size=8).digest()
     return int.from_bytes(h, "big", signed=False) & ((1 << 61) - 1)
 
 
@@ -206,7 +206,9 @@ class SkillEnvWorkflow(RolloutWorkflow):
 
         # env_config as OmegaConf (build_*_envs read nested attrs).
         self.env_config = (
-            env_config if isinstance(env_config, OmegaConf) else OmegaConf.create(env_config)
+            env_config
+            if isinstance(env_config, OmegaConf)
+            else OmegaConf.create(env_config)
         )
         # history_length: alfworld/webshop render the last N (obs, action) pairs;
         # search does not use it (defaults to 0 -> no history block).
@@ -282,7 +284,9 @@ class SkillEnvWorkflow(RolloutWorkflow):
             memory_context=ctx.history,
         )
 
-    def _build_history(self, chat_history: list, traj_steps: list[dict[str, str]]) -> str:
+    def _build_history(
+        self, chat_history: list, traj_steps: list[dict[str, str]]
+    ) -> str:
         """Render history for the prompt's history slot (default: search tags)."""
         lines = []
         for msg in chat_history:
@@ -376,7 +380,9 @@ class SkillEnvWorkflow(RolloutWorkflow):
 
             output_tokens = resp.output_tokens
             output_logprobs = resp.output_logprobs
-            output_versions = getattr(resp, "output_versions", [-1] * len(output_tokens))
+            output_versions = getattr(
+                resp, "output_versions", [-1] * len(output_tokens)
+            )
 
             # Decode the model action and project to an env action.
             action_str = self.tokenizer.decode(output_tokens, skip_special_tokens=True)
@@ -459,6 +465,16 @@ class SkillEnvWorkflow(RolloutWorkflow):
                 trajectory=traj_steps,
                 task_type=task_type,
             )
+
+        # Log per-rollout reward to the rollout stat scope (mirrors
+        # areal/workflow/multi_turn.py:123 and areal/workflow/rlvr.py:134).
+        # `reward` is the trajectory outcome (10*won for alfworld/webshop,
+        # 0/1 for search); `num_turns` is the number of generate calls made
+        # (one per env step actually executed, incl. invalid-action retries);
+        # `won` is the 0/1 success flag for easy success-rate tracking.
+        stats_tracker.get(workflow_context.stat_scope()).scalar(
+            reward=episode_reward, num_turns=len(traj_steps), won=float(won)
+        )
 
         # NOTE: returned dict must contain ONLY tensors (concat_padded_tensors
         # calls torch.cat per key). Non-tensor success/prompt data is carried
@@ -620,7 +636,10 @@ def retrieved_has_skills(retrieved_memories: dict | None) -> bool:
     """Whether the retrieved memory carries injectable skills."""
     return bool(
         retrieved_memories is not None
-        and (retrieved_memories.get("general_skills") or retrieved_memories.get("task_specific_skills"))
+        and (
+            retrieved_memories.get("general_skills")
+            or retrieved_memories.get("task_specific_skills")
+        )
     )
 
 
@@ -657,7 +676,7 @@ class AlfworldEnvWorkflow(SkillEnvWorkflow):
     def _extract_task(self, obs_text: str, task_kwargs: dict[str, Any]) -> str:
         task_start = obs_text.find("Your task is to: ")
         if task_start != -1:
-            return obs_text[task_start + len("Your task is to: "):].strip()
+            return obs_text[task_start + len("Your task is to: ") :].strip()
         return obs_text  # fallback: whole obs
 
     def _build_text_obs(self, ctx: TurnContext) -> str:
@@ -700,11 +719,13 @@ class AlfworldEnvWorkflow(SkillEnvWorkflow):
             admissible_actions=admissible_str,
         )
 
-    def _build_history(self, chat_history: list, traj_steps: list[dict[str, str]]) -> str:
+    def _build_history(
+        self, chat_history: list, traj_steps: list[dict[str, str]]
+    ) -> str:
         """Render the last ``history_length`` (observation, action) pairs."""
         if self.history_length <= 0 or not traj_steps:
             return ""
-        recent = traj_steps[-self.history_length:]
+        recent = traj_steps[-self.history_length :]
         lines = []
         for s in recent:
             lines.append(f"Observation: {s.get('observation', '')}")
@@ -786,10 +807,12 @@ class WebShopEnvWorkflow(SkillEnvWorkflow):
             available_actions=avail,
         )
 
-    def _build_history(self, chat_history: list, traj_steps: list[dict[str, str]]) -> str:
+    def _build_history(
+        self, chat_history: list, traj_steps: list[dict[str, str]]
+    ) -> str:
         if self.history_length <= 0 or not traj_steps:
             return ""
-        recent = traj_steps[-self.history_length:]
+        recent = traj_steps[-self.history_length :]
         lines = []
         for s in recent:
             lines.append(f"Observation: {s.get('observation', '')}")

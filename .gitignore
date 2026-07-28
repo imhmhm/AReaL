@@ -216,3 +216,7 @@ sympy/
 kernel_meta/
 fusion_result.json
 
+# wisemlops
+/wisemlops/*
+!/wisemlops/demo_local_sglang.sh
+!/wisemlops/demo_local_vllm.sh
