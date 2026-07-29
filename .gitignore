@@ -199,8 +199,6 @@ api_key.json
 *.pdf
 *.swp
 
-# local debug/launch scripts (SkillRL adaptation scratch)
-mtp/
 
 .vscode/
 wandb/
@@ -220,3 +218,5 @@ fusion_result.json
 /wisemlops/*
 !/wisemlops/demo_local_sglang.sh
 !/wisemlops/demo_local_vllm.sh
+!/wisemlops/demo_if_local_sglang.sh
+!/wisemlops/demo_if_ray_sglang.sh
